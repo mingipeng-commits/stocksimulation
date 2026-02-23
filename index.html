@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>台股ETF投資模擬器</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>台股ETF投資模擬器</h1>
+    <p class="subtitle">Stock Investment Simulator for Taiwan ETFs</p>
+  </header>
+
+  <main>
+    <section class="config-panel">
+      <h2>模擬設定</h2>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label for="etf-select">選擇ETF</label>
+          <select id="etf-select">
+            <option value="0050">0050 元大台灣50</option>
+            <option value="0056">0056 元大高股息</option>
+            <option value="006208">006208 富邦台50</option>
+            <option value="00878">00878 國泰永續高股息</option>
+            <option value="00919">00919 群益台灣精選高息</option>
+            <option value="00713">00713 元大台灣高息低波</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="strategy-select">購買策略</label>
+          <select id="strategy-select">
+            <option value="lump-sum">單筆投入 (One-time)</option>
+            <option value="dca-dollar">定期定額 (Fixed $ monthly)</option>
+            <option value="dca-share">定期定股 (Fixed shares monthly)</option>
+          </select>
+        </div>
+
+        <div class="form-group" id="lump-sum-group">
+          <label for="lump-sum-amount">投入金額 (NTD)</label>
+          <input type="number" id="lump-sum-amount" value="100000" min="1000" step="1000">
+        </div>
+
+        <div class="form-group hidden" id="dca-dollar-group">
+          <label for="dca-dollar-amount">每月投入金額 (NTD)</label>
+          <input type="number" id="dca-dollar-amount" value="10000" min="1000" step="1000">
+        </div>
+
+        <div class="form-group hidden" id="dca-share-group">
+          <label for="dca-share-amount">每月購買股數</label>
+          <input type="number" id="dca-share-amount" value="1000" min="1" step="1">
+        </div>
+
+        <div class="form-group">
+          <label for="start-date">起始日期</label>
+          <input type="month" id="start-date" value="2020-01">
+        </div>
+
+        <div class="form-group">
+          <label for="end-date">結束日期</label>
+          <input type="month" id="end-date" value="2025-01">
+        </div>
+
+        <div class="form-group">
+          <label for="dividend-strategy">股利處理方式</label>
+          <select id="dividend-strategy">
+            <option value="reinvest">股利再投入 (Reinvest)</option>
+            <option value="deposit">股利定存 (Fixed deposit)</option>
+          </select>
+        </div>
+
+        <div class="form-group hidden" id="deposit-rate-group">
+          <label for="deposit-rate">定存年利率 (%)</label>
+          <input type="number" id="deposit-rate" value="1.5" min="0" max="10" step="0.1">
+        </div>
+      </div>
+
+      <div class="cost-info">
+        <p><strong>交易成本：</strong>買入手續費 0.1425% ｜ 賣出手續費 0.1425% + 證交稅 0.1%</p>
+      </div>
+
+      <button id="run-simulation" class="btn-primary">開始模擬</button>
+
+      <div id="data-notice" class="data-notice hidden">
+        <strong>注意：</strong>目前使用模擬產生的範例資料。如需真實歷史資料，請執行 <code>python fetch_data.py</code> 下載後重新整理頁面。
+      </div>
+    </section>
+
+    <section class="results-panel hidden" id="results-panel">
+      <h2>模擬結果</h2>
+
+      <div class="summary-cards">
+        <div class="card">
+          <div class="card-label">總投入成本</div>
+          <div class="card-value" id="total-cost">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">持股市值</div>
+          <div class="card-value" id="market-value">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">累計股利</div>
+          <div class="card-value" id="total-dividends">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">總資產 (含賣出成本)</div>
+          <div class="card-value" id="total-assets">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">總報酬率</div>
+          <div class="card-value" id="total-return">-</div>
+        </div>
+        <div class="card">
+          <div class="card-label">年化報酬率</div>
+          <div class="card-value" id="annualized-return">-</div>
+        </div>
+      </div>
+
+      <div class="chart-container">
+        <h3>資產價值走勢</h3>
+        <canvas id="portfolio-chart"></canvas>
+      </div>
+
+      <div class="chart-container">
+        <h3>股利紀錄</h3>
+        <canvas id="dividend-chart"></canvas>
+      </div>
+
+      <div class="details-section">
+        <h3>交易明細</h3>
+        <div class="table-wrapper">
+          <table id="transaction-table">
+            <thead>
+              <tr>
+                <th>日期</th>
+                <th>類型</th>
+                <th>股價</th>
+                <th>股數</th>
+                <th>金額</th>
+                <th>手續費</th>
+                <th>累計持股</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>資料來源：歷史股價與配息資料 ｜ 僅供模擬參考，不構成投資建議</p>
+  </footer>
+
+  <script src="js/data.js"></script>
+  <script src="js/simulator.js"></script>
+  <script src="js/ui.js"></script>
+</body>
+</html>
