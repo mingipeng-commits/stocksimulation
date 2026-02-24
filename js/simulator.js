@@ -52,6 +52,35 @@ class Simulator {
   }
 
   /**
+   * Detect which splits are actually reflected as a price discontinuity in the
+   * given price map.  If the price in the split month is roughly 1/ratio of the
+   * prior month's price, the split is "visible" and the simulator must multiply
+   * shares.  If prices are continuous (data source already adjusted), the split
+   * is invisible and no share/price adjustment is needed.
+   * @param {Map<string,number>} priceMap - monthly prices
+   * @returns {Array} subset of _getSplits() that show a discontinuity
+   */
+  _detectActiveSplits(priceMap) {
+    const splits = this._getSplits();
+    const sortedMonths = [...priceMap.keys()].sort();
+    const active = [];
+    for (const split of splits) {
+      const idx = sortedMonths.indexOf(split.date);
+      if (idx <= 0) continue;
+      const priorPrice = priceMap.get(sortedMonths[idx - 1]);
+      const splitPrice = priceMap.get(split.date);
+      if (!priorPrice || !splitPrice) continue;
+      // If price dropped to roughly 1/ratio of the prior month, the split is
+      // visible in the data (e.g. ratio=4 → price ~25% of prior).
+      // Use a generous threshold of 60% to account for normal volatility.
+      if (splitPrice / priorPrice < (1 / split.ratio) * 1.6) {
+        active.push(split);
+      }
+    }
+    return active;
+  }
+
+  /**
    * Build a Map<'YYYY-MM', number> of monthly buy prices.
    * If CSV data is available, use the selected priceType column.
    * Otherwise, use the first trading day's close from JSON.
@@ -133,6 +162,9 @@ class Simulator {
       return { error: '所選日期範圍內沒有可用的價格資料' };
     }
 
+    // Detect which splits are actually visible as price drops in the data
+    const activeSplits = this._detectActiveSplits(buyPrices);
+
     // Build dividend lookup: month → [{date, amount}]
     const divByMonth = new Map();
     for (const d of this.dividends) {
@@ -163,8 +195,10 @@ class Simulator {
       let monthSplitRatio = 0;
 
       // --- Handle stock splits this month ---
-      const splits = this._getSplits();
-      for (const split of splits) {
+      // Only multiply shares when the price data actually shows the split
+      // discontinuity (e.g. user-uploaded CSV with raw post-split prices).
+      // If prices are continuous (JSON adjusted data), skip share adjustment.
+      for (const split of activeSplits) {
         if (split.date === ym && totalShares > 0) {
           totalShares *= split.ratio;
           monthSplitRatio = split.ratio;
@@ -305,7 +339,8 @@ class Simulator {
    */
   computeETFStats() {
     const vp = this._buildValuationPrices();
-    const splits = this._getSplits();
+    const allSplits = this._getSplits();
+    const activeSplits = this._detectActiveSplits(vp);
     const sortedMonths = [...vp.keys()].sort();
 
     if (sortedMonths.length < 2) return null;
@@ -313,12 +348,14 @@ class Simulator {
     const firstMonth = sortedMonths[0];
     const lastMonth = sortedMonths[sortedMonths.length - 1];
 
-    // Build split-adjusted prices for CAGR: divide pre-split prices by
-    // cumulative split ratio so they are comparable to post-split prices
+    // Build split-adjusted prices for CAGR.
+    // Only adjust for splits that are actually visible as price discontinuities.
+    // If the data source already provides continuous (adjusted) prices, no
+    // correction is needed and activeSplits will be empty.
     const adjustedVP = new Map();
     for (const ym of sortedMonths) {
       let factor = 1;
-      for (const split of splits) {
+      for (const split of activeSplits) {
         if (ym < split.date) factor *= split.ratio;
       }
       adjustedVP.set(ym, vp.get(ym) / factor);
@@ -357,8 +394,8 @@ class Simulator {
         : yields[mid]) * 100;
     }
 
-    // Collect splits that fall within the data range
-    const activeSplits = splits.filter(s => s.date >= firstMonth && s.date <= lastMonth);
+    // Report all defined splits in the data range (for display annotation)
+    const rangeSplits = allSplits.filter(s => s.date >= firstMonth && s.date <= lastMonth);
 
     return {
       cagr,
@@ -369,7 +406,7 @@ class Simulator {
       lastPrice: vp.get(lastMonth),
       years,
       dividendYears: yields.length,
-      splits: activeSplits,
+      splits: rangeSplits,
     };
   }
 }
