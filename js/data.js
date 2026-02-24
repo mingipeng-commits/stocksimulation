@@ -184,13 +184,15 @@ function parseDividendCSV(csvText) {
 
   const header = splitCSVLine(lines[0]);
 
-  // Find date column
-  const dateCol = findCol(header, /日期|除息|基準|發放|record.*date|ex.*date|date/i, 0);
+  // Find date column — match 除權息日, 除息日, 日期, 配息基準日, etc.
+  const dateCol = findCol(header, /除權息|除息|日期|基準|發放|record.*date|ex.*date|date/i, 0);
 
-  // Find amount column
-  const amtCol = findCol(header, /金額|配息|配發|股利|殖利|dividend|amount|每[股單]/i);
+  // Find amount column — specifically look for 現金股利 first (to avoid matching 殖利率)
+  let amtCol = findCol(header, /現金股利|現金配息/i);
+  if (amtCol === -1) amtCol = findCol(header, /配息金額|每股配息|每單位配息|配發金額/i);
+  if (amtCol === -1) amtCol = findCol(header, /dividend|amount/i);
   if (amtCol === -1) {
-    return { error: '找不到配息金額欄位（配息金額、每股配息、股利金額等），請確認 CSV 標題列' };
+    return { error: '找不到配息金額欄位（現金股利、配息金額、每股配息等），請確認 CSV 標題列' };
   }
 
   const dividends = [];
