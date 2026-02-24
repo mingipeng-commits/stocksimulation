@@ -30,28 +30,16 @@ class Simulator {
   }
 
   /**
-   * Merge JSON dividends with uploaded CSV dividends.
-   * CSV dividends take priority for the same month; new dates are added.
+   * Use uploaded CSV dividends as the sole authoritative source when available.
+   * JSON dividends are only used as fallback when no CSV is provided.
    */
   _mergeDividends(jsonDividends, dividendCSV) {
     if (!dividendCSV || !dividendCSV.dividends || dividendCSV.dividends.length === 0) {
       return jsonDividends;
     }
 
-    // Build a map of existing dividends by YYYY-MM (month level)
-    const merged = new Map();
-    for (const d of jsonDividends) {
-      const ym = d.date.substring(0, 7);
-      merged.set(ym, d);
-    }
-
-    // CSV dividends override or add new entries
-    for (const d of dividendCSV.dividends) {
-      const ym = d.date.substring(0, 7);
-      merged.set(ym, d);
-    }
-
-    return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+    // CSV is the authoritative source — ignore JSON sample dividends entirely
+    return [...dividendCSV.dividends].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   /**

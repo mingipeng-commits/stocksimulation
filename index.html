@@ -435,10 +435,8 @@ class Simulator {
 
   _mergeDividends(jsonDividends, dividendCSV) {
     if (!dividendCSV || !dividendCSV.dividends || dividendCSV.dividends.length === 0) return jsonDividends;
-    const merged = new Map();
-    for (const d of jsonDividends) merged.set(d.date.substring(0, 7), d);
-    for (const d of dividendCSV.dividends) merged.set(d.date.substring(0, 7), d);
-    return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+    // CSV is the authoritative source — ignore JSON sample dividends entirely
+    return [...dividendCSV.dividends].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   _buildMonthlyPrices(priceType) {
