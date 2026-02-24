@@ -43,6 +43,15 @@ class Simulator {
   }
 
   /**
+   * Get stock split events for this ticker from ETF_INFO.
+   * @returns {Array<{date:string, ratio:number, label:string}>}
+   */
+  _getSplits() {
+    const info = ETF_INFO[this.ticker];
+    return (info && info.splits) || [];
+  }
+
+  /**
    * Build a Map<'YYYY-MM', number> of monthly buy prices.
    * If CSV data is available, use the selected priceType column.
    * Otherwise, use the first trading day's close from JSON.
@@ -151,6 +160,16 @@ class Simulator {
       let monthBuyFee = 0;
       let monthDividend = 0;
       let monthDivShares = 0;
+      let monthSplitRatio = 0;
+
+      // --- Handle stock splits this month ---
+      const splits = this._getSplits();
+      for (const split of splits) {
+        if (split.date === ym && totalShares > 0) {
+          totalShares *= split.ratio;
+          monthSplitRatio = split.ratio;
+        }
+      }
 
       // --- Handle dividends in this month ---
       const monthDivs = divByMonth.get(ym) || [];
@@ -232,6 +251,7 @@ class Simulator {
         buyFee: Math.round(monthBuyFee),
         dividendReceived: Math.round(monthDividend),
         dividendShares: monthDivShares,
+        splitRatio: monthSplitRatio,
         totalShares: totalShares,
         totalInvested: Math.round(totalInvested),
         depositBalance: Math.round(depositBalance),
@@ -285,25 +305,37 @@ class Simulator {
    */
   computeETFStats() {
     const vp = this._buildValuationPrices();
+    const splits = this._getSplits();
     const sortedMonths = [...vp.keys()].sort();
 
     if (sortedMonths.length < 2) return null;
 
     const firstMonth = sortedMonths[0];
     const lastMonth = sortedMonths[sortedMonths.length - 1];
-    const firstPrice = vp.get(firstMonth);
-    const lastPrice = vp.get(lastMonth);
 
-    // CAGR = (endPrice / startPrice)^(1/years) - 1
+    // Build split-adjusted prices for CAGR: divide pre-split prices by
+    // cumulative split ratio so they are comparable to post-split prices
+    const adjustedVP = new Map();
+    for (const ym of sortedMonths) {
+      let factor = 1;
+      for (const split of splits) {
+        if (ym < split.date) factor *= split.ratio;
+      }
+      adjustedVP.set(ym, vp.get(ym) / factor);
+    }
+
+    const adjFirstPrice = adjustedVP.get(firstMonth);
+    const adjLastPrice = adjustedVP.get(lastMonth);
+
+    // CAGR uses split-adjusted prices
     const y1 = parseInt(firstMonth.substring(0, 4));
     const m1 = parseInt(firstMonth.substring(5, 7));
     const y2 = parseInt(lastMonth.substring(0, 4));
     const m2 = parseInt(lastMonth.substring(5, 7));
     const years = ((y2 - y1) * 12 + (m2 - m1)) / 12;
-    const cagr = years > 0 ? (Math.pow(lastPrice / firstPrice, 1 / years) - 1) * 100 : 0;
+    const cagr = years > 0 ? (Math.pow(adjLastPrice / adjFirstPrice, 1 / years) - 1) * 100 : 0;
 
-    // Annual dividend yield: for each dividend, yield = amount / price at that month
-    // Group by year, sum yields per year, then compute average and median
+    // Annual dividend yield: yield = amount / price (split-invariant, no adjustment needed)
     const yearlyYield = new Map();
     for (const div of this.dividends) {
       const ym = div.date.substring(0, 7);
@@ -325,15 +357,19 @@ class Simulator {
         : yields[mid]) * 100;
     }
 
+    // Collect splits that fall within the data range
+    const activeSplits = splits.filter(s => s.date >= firstMonth && s.date <= lastMonth);
+
     return {
       cagr,
       avgDividendYield: avgYield,
       medianDividendYield: medianYield,
       priceRange: `${firstMonth} ~ ${lastMonth}`,
-      firstPrice,
-      lastPrice,
+      firstPrice: vp.get(firstMonth),
+      lastPrice: vp.get(lastMonth),
       years,
       dividendYears: yields.length,
+      splits: activeSplits,
     };
   }
 }

@@ -420,8 +420,11 @@ function renderETFStats(stats) {
   const cagrEl = document.getElementById('etf-cagr');
   cagrEl.textContent = fmtPct(stats.cagr);
   cagrEl.className = 'etf-stat-value ' + (stats.cagr >= 0 ? 'positive' : 'negative');
+  const splitNote = stats.splits && stats.splits.length > 0
+    ? '，含' + stats.splits.map(s => s.label || `1:${s.ratio}拆股`).join('、')
+    : '';
   document.getElementById('etf-cagr-detail').textContent =
-    `$${stats.firstPrice.toFixed(2)} → $${stats.lastPrice.toFixed(2)}（${stats.priceRange}，${stats.years.toFixed(1)} 年）`;
+    `$${stats.firstPrice.toFixed(2)} → $${stats.lastPrice.toFixed(2)}（${stats.priceRange}，${stats.years.toFixed(1)} 年${splitNote}）`;
 
   const avgEl = document.getElementById('etf-avg-yield');
   avgEl.textContent = fmtPct(stats.avgDividendYield);
@@ -603,6 +606,7 @@ function renderMonthlyTable(details) {
       : 0;
     const returnClass = returnPct >= 0 ? 'positive' : 'negative';
 
+    const splitTag = d.splitRatio > 0 ? ` <span class="split-tag">x${d.splitRatio}拆股</span>` : '';
     tr.innerHTML = `
       <td>${d.month}</td>
       <td>${d.buyPrice.toFixed(2)}</td>
@@ -610,7 +614,7 @@ function renderMonthlyTable(details) {
       <td>${d.investment > 0 ? '$' + d.investment.toLocaleString() : '-'}</td>
       <td>${d.buyFee > 0 ? '$' + d.buyFee.toLocaleString() : '-'}</td>
       <td>${d.dividendReceived > 0 ? '$' + d.dividendReceived.toLocaleString() : '-'}</td>
-      <td>${d.totalShares.toLocaleString()}</td>
+      <td>${d.totalShares.toLocaleString()}${splitTag}</td>
       <td>$${d.totalInvested.toLocaleString()}</td>
       <td>$${d.marketValue.toLocaleString()}</td>
       <td class="${returnClass}">${returnPct.toFixed(2)}%</td>

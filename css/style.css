@@ -451,6 +451,18 @@ td.negative {
   font-weight: 600;
 }
 
+.split-tag {
+  display: inline-block;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  margin-left: 0.25rem;
+  border: 1px solid #f59e0b;
+}
+
 .type-buy {
   color: var(--danger);
 }
