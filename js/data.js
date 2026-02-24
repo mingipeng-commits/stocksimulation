@@ -163,3 +163,165 @@ function parseNum(s) {
   if (!s) return NaN;
   return parseFloat(s.replace(/,/g, '').trim());
 }
+
+// ---------------------------------------------------------------------------
+// Dividend CSV Parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a CSV text string containing dividend/distribution data.
+ * Looks for columns: 日期/除息日/配息基準日 and 金額/配息金額/每股配息/每單位配息
+ * Supports ROC (民國) and Western date formats.
+ * @param {string} csvText - raw CSV content
+ * @returns {{ dividends: Array<{date:string, amount:number}> } | { error: string }}
+ */
+function parseDividendCSV(csvText) {
+  // Remove BOM
+  if (csvText.charCodeAt(0) === 0xFEFF) csvText = csvText.slice(1);
+
+  const lines = csvText.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return { error: '檔案內容不足，至少需要標題列和一行資料' };
+
+  const header = splitCSVLine(lines[0]);
+
+  // Find date column
+  const dateCol = findCol(header, /日期|除息|基準|發放|record.*date|ex.*date|date/i, 0);
+
+  // Find amount column
+  const amtCol = findCol(header, /金額|配息|配發|股利|殖利|dividend|amount|每[股單]/i);
+  if (amtCol === -1) {
+    return { error: '找不到配息金額欄位（配息金額、每股配息、股利金額等），請確認 CSV 標題列' };
+  }
+
+  const dividends = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    if (cols.length < 2) continue;
+
+    const rawDate = cols[dateCol] ? cols[dateCol].trim() : '';
+    const amount = parseNum(cols[amtCol]);
+    if (isNaN(amount) || amount <= 0) continue;
+
+    // Normalize date to 'YYYY-MM-DD' or 'YYYY-MM'
+    const date = normalizeDividendDate(rawDate);
+    if (!date) continue;
+
+    dividends.push({ date, amount });
+  }
+
+  if (dividends.length === 0) {
+    return { error: '無法解析任何配息資料，請確認 CSV 格式和日期/金額欄位' };
+  }
+
+  // Sort by date
+  dividends.sort((a, b) => a.date.localeCompare(b.date));
+
+  return { dividends };
+}
+
+/**
+ * Normalize dividend date to 'YYYY-MM-DD' format.
+ * Falls back to 'YYYY-MM' if only year/month available.
+ */
+function normalizeDividendDate(raw) {
+  let m;
+  // ROC full date: 112/01/15, 112-01-15, 112年01月15日
+  m = raw.match(/^(\d{2,3})\s*[\/\-年]\s*(\d{1,2})\s*[\/\-月]\s*(\d{1,2})/);
+  if (m && parseInt(m[1]) < 200) {
+    const y = parseInt(m[1]) + 1911;
+    return `${y}-${String(parseInt(m[2])).padStart(2, '0')}-${String(parseInt(m[3])).padStart(2, '0')}`;
+  }
+  // ROC year/month only: 112/01, 112-01
+  m = raw.match(/^(\d{2,3})\s*[\/\-年]\s*(\d{1,2})/);
+  if (m && parseInt(m[1]) < 200) {
+    const y = parseInt(m[1]) + 1911;
+    return `${y}-${String(parseInt(m[2])).padStart(2, '0')}`;
+  }
+  // Western full date: 2024-01-15, 2024/01/15
+  m = raw.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})\s*[\/\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(parseInt(m[2])).padStart(2, '0')}-${String(parseInt(m[3])).padStart(2, '0')}`;
+  // Western year/month: 2024-01, 2024/01
+  m = raw.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(parseInt(m[2])).padStart(2, '0')}`;
+  // Compact: 20240115 or 202401
+  m = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = raw.match(/^(\d{4})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}`;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Data Persistence (localStorage)
+// ---------------------------------------------------------------------------
+
+const STORAGE_PREFIX = 'etf_sim_';
+
+/**
+ * Save uploaded CSV data for an ETF to localStorage.
+ * @param {string} ticker - ETF ticker
+ * @param {string} dataType - 'price' or 'dividend'
+ * @param {Object} data - parsed CSV data
+ */
+function saveUploadedData(ticker, dataType, data) {
+  const key = `${STORAGE_PREFIX}${ticker}_${dataType}`;
+  localStorage.setItem(key, JSON.stringify(data));
+}
+
+/**
+ * Load previously saved CSV data from localStorage.
+ * @param {string} ticker
+ * @param {string} dataType - 'price' or 'dividend'
+ * @returns {Object|null}
+ */
+function loadSavedData(ticker, dataType) {
+  const key = `${STORAGE_PREFIX}${ticker}_${dataType}`;
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clear saved data for an ETF.
+ * @param {string} ticker
+ * @param {string} dataType - 'price' or 'dividend'
+ */
+function clearSavedData(ticker, dataType) {
+  const key = `${STORAGE_PREFIX}${ticker}_${dataType}`;
+  localStorage.removeItem(key);
+}
+
+/**
+ * Merge uploaded dividend data into an ETF JSON object and return downloadable JSON string.
+ * @param {Object} etfData - original JSON data
+ * @param {Object|null} csvPriceData - parsed price CSV data
+ * @param {Object|null} csvDividendData - parsed dividend CSV data
+ * @returns {string} JSON string for download
+ */
+function buildMergedJSON(etfData, csvPriceData, csvDividendData) {
+  const merged = {
+    ticker: etfData.ticker,
+    name: etfData.name,
+    prices: etfData.prices || [],
+    dividends: etfData.dividends || [],
+    lastUpdated: new Date().toISOString().substring(0, 10),
+  };
+
+  // Merge dividend CSV data (replace duplicates by date, add new)
+  if (csvDividendData && csvDividendData.dividends) {
+    const existingDates = new Set(merged.dividends.map(d => d.date));
+    for (const div of csvDividendData.dividends) {
+      if (!existingDates.has(div.date)) {
+        merged.dividends.push(div);
+      }
+    }
+    merged.dividends.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  return JSON.stringify(merged, null, 2);
+}

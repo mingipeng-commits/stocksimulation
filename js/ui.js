@@ -1,26 +1,34 @@
 /**
  * UI controller — wires DOM elements to the Simulator engine.
- * Supports both JSON data and user-uploaded CSV.
+ * Supports both JSON data and user-uploaded CSV (price + dividend).
+ * Persists uploaded data to localStorage so users don't re-upload each visit.
  */
 
-let currentETFData = null;   // JSON data (prices + dividends)
-let currentCSVData = null;   // Parsed CSV data (monthly prices) or null
+let currentETFData = null;       // JSON data (prices + dividends)
+let currentCSVData = null;       // Parsed CSV price data (monthly prices) or null
+let currentDividendCSV = null;   // Parsed CSV dividend data or null
 let portfolioChart = null;
 let dividendChart = null;
 
 // --- DOM refs ---
-const etfSelect             = document.getElementById('etf-select');
-const priceTypeSelect       = document.getElementById('price-type-select');
-const strategySelect        = document.getElementById('strategy-select');
+const etfSelect              = document.getElementById('etf-select');
+const priceTypeSelect        = document.getElementById('price-type-select');
+const strategySelect         = document.getElementById('strategy-select');
 const dividendStrategySelect = document.getElementById('dividend-strategy');
-const runBtn                = document.getElementById('run-simulation');
-const csvUpload             = document.getElementById('csv-upload');
-const csvStatus             = document.getElementById('csv-status');
-const priceTypeNote         = document.getElementById('price-type-note');
+const runBtn                 = document.getElementById('run-simulation');
+const csvUpload              = document.getElementById('csv-upload');
+const csvStatus              = document.getElementById('csv-status');
+const priceTypeNote          = document.getElementById('price-type-note');
+const dividendCsvUpload      = document.getElementById('dividend-csv-upload');
+const dividendCsvStatus      = document.getElementById('dividend-csv-status');
+const btnSaveData            = document.getElementById('btn-save-data');
+const btnClearData           = document.getElementById('btn-clear-data');
+const btnDownloadJson        = document.getElementById('btn-download-json');
+const persistStatus          = document.getElementById('persist-status');
 
-const lumpGroup       = document.getElementById('lump-sum-group');
-const dcaDollarGroup  = document.getElementById('dca-dollar-group');
-const dcaShareGroup   = document.getElementById('dca-share-group');
+const lumpGroup        = document.getElementById('lump-sum-group');
+const dcaDollarGroup   = document.getElementById('dca-dollar-group');
+const dcaShareGroup    = document.getElementById('dca-share-group');
 const depositRateGroup = document.getElementById('deposit-rate-group');
 
 // --- Show/hide helpers ---
@@ -43,12 +51,28 @@ function updatePriceTypeNote() {
   }
 }
 
+function updatePersistStatus() {
+  const ticker = etfSelect.value;
+  const hasSavedPrice = !!loadSavedData(ticker, 'price');
+  const hasSavedDiv   = !!loadSavedData(ticker, 'dividend');
+  if (hasSavedPrice || hasSavedDiv) {
+    const parts = [];
+    if (hasSavedPrice) parts.push('價格');
+    if (hasSavedDiv) parts.push('配息');
+    persistStatus.textContent = `💾 已儲存：${parts.join(' + ')} 資料`;
+    persistStatus.className = 'persist-status persist-ok';
+  } else {
+    persistStatus.textContent = '';
+    persistStatus.className = 'persist-status';
+  }
+}
+
 strategySelect.addEventListener('change', updateVisibleInputs);
 dividendStrategySelect.addEventListener('change', updateDividendInputs);
 updateVisibleInputs();
 updateDividendInputs();
 
-// --- CSV Upload ---
+// --- Price CSV Upload ---
 csvUpload.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) {
@@ -89,15 +113,141 @@ csvUpload.addEventListener('change', (e) => {
   reader.readAsText(file);
 });
 
+// --- Dividend CSV Upload ---
+dividendCsvUpload.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) {
+    currentDividendCSV = null;
+    dividendCsvStatus.textContent = '';
+    dividendCsvStatus.className = 'csv-status';
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = parseDividendCSV(reader.result);
+    if (result.error) {
+      currentDividendCSV = null;
+      dividendCsvStatus.textContent = '❌ ' + result.error;
+      dividendCsvStatus.className = 'csv-status csv-error';
+    } else {
+      currentDividendCSV = result;
+      const count = result.dividends.length;
+      const from = result.dividends[0].date;
+      const to = result.dividends[count - 1].date;
+      dividendCsvStatus.textContent = `✅ 已載入 ${count} 筆配息紀錄（${from} ~ ${to}）`;
+      dividendCsvStatus.className = 'csv-status csv-ok';
+    }
+  };
+  reader.readAsText(file);
+});
+
 // Clear CSV when ETF selection changes
 etfSelect.addEventListener('change', () => {
   currentCSVData = null;
+  currentDividendCSV = null;
   csvUpload.value = '';
+  dividendCsvUpload.value = '';
   csvStatus.textContent = '';
   csvStatus.className = 'csv-status';
+  dividendCsvStatus.textContent = '';
+  dividendCsvStatus.className = 'csv-status';
   updatePriceTypeNote();
   updateDateRange();
+  loadPersistedData();
 });
+
+// --- Data Persistence Buttons ---
+btnSaveData.addEventListener('click', () => {
+  const ticker = etfSelect.value;
+  let saved = false;
+  if (currentCSVData) {
+    saveUploadedData(ticker, 'price', currentCSVData);
+    saved = true;
+  }
+  if (currentDividendCSV) {
+    saveUploadedData(ticker, 'dividend', currentDividendCSV);
+    saved = true;
+  }
+  if (saved) {
+    persistStatus.textContent = '✅ 資料已儲存，下次開啟將自動載入';
+    persistStatus.className = 'persist-status persist-ok';
+  } else {
+    persistStatus.textContent = '⚠️ 沒有上傳的資料可儲存';
+    persistStatus.className = 'persist-status persist-warn';
+  }
+  setTimeout(updatePersistStatus, 3000);
+});
+
+btnClearData.addEventListener('click', () => {
+  const ticker = etfSelect.value;
+  clearSavedData(ticker, 'price');
+  clearSavedData(ticker, 'dividend');
+  persistStatus.textContent = '🗑️ 已清除儲存的資料';
+  persistStatus.className = 'persist-status';
+  setTimeout(updatePersistStatus, 3000);
+});
+
+btnDownloadJson.addEventListener('click', async () => {
+  const ticker = etfSelect.value;
+  if (!currentETFData) {
+    await updateDateRange();
+  }
+  if (!currentETFData) {
+    alert('無法載入基礎 JSON 資料');
+    return;
+  }
+
+  const jsonStr = buildMergedJSON(currentETFData, currentCSVData, currentDividendCSV);
+  const blob = new Blob([jsonStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${ticker}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+// --- Load persisted data from localStorage ---
+function loadPersistedData() {
+  const ticker = etfSelect.value;
+
+  // Load saved price CSV data
+  const savedPrice = loadSavedData(ticker, 'price');
+  if (savedPrice && !currentCSVData) {
+    currentCSVData = savedPrice;
+    const months = savedPrice.prices.length;
+    const from = savedPrice.prices[0].date;
+    const to = savedPrice.prices[months - 1].date;
+    csvStatus.textContent = `💾 自動載入 ${months} 個月價格資料（${from} ~ ${to}）`;
+    csvStatus.className = 'csv-status csv-ok';
+
+    const startInput = document.getElementById('start-date');
+    const endInput = document.getElementById('end-date');
+    startInput.min = from;
+    startInput.max = to;
+    endInput.min = from;
+    endInput.max = to;
+    if (startInput.value < from || startInput.value > to) startInput.value = from;
+    if (endInput.value > to || endInput.value < from) endInput.value = to;
+  }
+
+  // Load saved dividend CSV data
+  const savedDiv = loadSavedData(ticker, 'dividend');
+  if (savedDiv && !currentDividendCSV) {
+    currentDividendCSV = savedDiv;
+    const count = savedDiv.dividends.length;
+    const from = savedDiv.dividends[0].date;
+    const to = savedDiv.dividends[count - 1].date;
+    dividendCsvStatus.textContent = `💾 自動載入 ${count} 筆配息紀錄（${from} ~ ${to}）`;
+    dividendCsvStatus.className = 'csv-status csv-ok';
+  }
+
+  updatePriceTypeNote();
+  updatePersistStatus();
+}
 
 // --- Load ETF JSON data ---
 async function loadETFData(ticker) {
@@ -199,7 +349,7 @@ runBtn.addEventListener('click', async () => {
   else if (strat === 'dca-dollar') amount = Number(document.getElementById('dca-dollar-amount').value);
   else amount = Number(document.getElementById('dca-share-amount').value);
 
-  const sim = new Simulator(currentETFData, currentCSVData);
+  const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
   const result = sim.run({
     strategy: strat,
     amount: amount,
@@ -384,5 +534,7 @@ function renderMonthlyTable(details) {
 }
 
 // --- Init ---
-updateDateRange();
+updateDateRange().then(() => {
+  loadPersistedData();
+});
 updatePriceTypeNote();

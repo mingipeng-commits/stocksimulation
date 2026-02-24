@@ -115,6 +115,80 @@ h3 {
   font-weight: 500;
 }
 
+/* Dividend CSV upload (green tint) */
+.csv-upload-dividend {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+/* Data Persistence Section */
+.data-persist-section {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.25rem;
+  padding: 0.75rem 1rem;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.persist-status {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.persist-status.persist-ok {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.persist-status.persist-warn {
+  color: #d97706;
+  font-weight: 500;
+}
+
+.persist-buttons {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.btn-small {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--text);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-small:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.btn-save:hover {
+  background: #ecfdf5;
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.btn-clear:hover {
+  background: #fef2f2;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-download:hover {
+  background: #eff6ff;
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));

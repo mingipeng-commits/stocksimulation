@@ -20,12 +20,38 @@ class Simulator {
   /**
    * @param {Object} etfData - JSON data {prices: [{date, close}], dividends: [{date, amount}]}
    * @param {Object|null} csvData - parsed CSV {prices: [{date:'YYYY-MM', high, low, avg}]}
+   * @param {Object|null} dividendCSV - parsed dividend CSV {dividends: [{date, amount}]}
    */
-  constructor(etfData, csvData = null) {
+  constructor(etfData, csvData = null, dividendCSV = null) {
     this.jsonPrices = etfData.prices || [];
-    this.dividends  = etfData.dividends || [];
+    this.dividends  = this._mergeDividends(etfData.dividends || [], dividendCSV);
     this.ticker     = etfData.ticker;
     this.csvData    = csvData;
+  }
+
+  /**
+   * Merge JSON dividends with uploaded CSV dividends.
+   * CSV dividends take priority for the same month; new dates are added.
+   */
+  _mergeDividends(jsonDividends, dividendCSV) {
+    if (!dividendCSV || !dividendCSV.dividends || dividendCSV.dividends.length === 0) {
+      return jsonDividends;
+    }
+
+    // Build a map of existing dividends by YYYY-MM (month level)
+    const merged = new Map();
+    for (const d of jsonDividends) {
+      const ym = d.date.substring(0, 7);
+      merged.set(ym, d);
+    }
+
+    // CSV dividends override or add new entries
+    for (const d of dividendCSV.dividends) {
+      const ym = d.date.substring(0, 7);
+      merged.set(ym, d);
+    }
+
+    return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   /**

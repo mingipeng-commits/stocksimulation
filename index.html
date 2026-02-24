@@ -18,15 +18,43 @@
     <section class="config-panel">
       <h2>模擬設定</h2>
 
-      <!-- CSV Upload -->
+      <!-- CSV Upload: Price Data -->
       <div class="csv-upload-section">
         <label class="csv-upload-label" for="csv-upload">
           <span class="csv-icon">📂</span>
-          上傳歷史資料 CSV（選用 — 支援最高價／最低價／加權平均價）
+          上傳價格資料 CSV（選用 — 支援最高價／最低價／加權平均價）
         </label>
         <div class="csv-upload-row">
           <input type="file" id="csv-upload" accept=".csv,.txt">
           <span class="csv-status" id="csv-status"></span>
+        </div>
+      </div>
+
+      <!-- CSV Upload: Dividend Data -->
+      <div class="csv-upload-section csv-upload-dividend">
+        <label class="csv-upload-label" for="dividend-csv-upload">
+          <span class="csv-icon">📂</span>
+          上傳配息資料 CSV（選用 — 日期 + 每股配息金額）
+        </label>
+        <div class="csv-upload-row">
+          <input type="file" id="dividend-csv-upload" accept=".csv,.txt">
+          <span class="csv-status" id="dividend-csv-status"></span>
+        </div>
+      </div>
+
+      <!-- Data persistence controls -->
+      <div class="data-persist-section" id="data-persist-section">
+        <span class="persist-status" id="persist-status"></span>
+        <div class="persist-buttons">
+          <button type="button" class="btn-small btn-save" id="btn-save-data" title="儲存上傳資料到瀏覽器，下次開啟自動載入">
+            💾 儲存資料
+          </button>
+          <button type="button" class="btn-small btn-clear" id="btn-clear-data" title="清除已儲存的上傳資料">
+            🗑️ 清除儲存
+          </button>
+          <button type="button" class="btn-small btn-download" id="btn-download-json" title="下載合併後的 JSON 檔，可放回 data/ 資料夾更新 GitHub">
+            📥 下載 JSON
+          </button>
         </div>
       </div>
 
