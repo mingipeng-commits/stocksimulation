@@ -4,6 +4,10 @@
  * Transaction costs:
  *   Buy:  0.1425% commission
  *   Sell: 0.1425% commission + 0.1% securities transaction tax
+ *
+ * Supports two data sources:
+ *   1. JSON daily prices (data/*.json) — uses close price
+ *   2. CSV monthly prices (user-uploaded) — uses 最高價/最低價/加權平均價
  */
 
 const COST = {
@@ -13,127 +17,153 @@ const COST = {
 };
 
 class Simulator {
-  constructor(etfData) {
-    this.prices = etfData.prices; // [{date, close}, ...]
-    this.dividends = etfData.dividends; // [{date, amount}, ...]
-    this.ticker = etfData.ticker;
+  /**
+   * @param {Object} etfData - JSON data {prices: [{date, close}], dividends: [{date, amount}]}
+   * @param {Object|null} csvData - parsed CSV {prices: [{date:'YYYY-MM', high, low, avg}]}
+   */
+  constructor(etfData, csvData = null) {
+    this.jsonPrices = etfData.prices || [];
+    this.dividends  = etfData.dividends || [];
+    this.ticker     = etfData.ticker;
+    this.csvData    = csvData;
   }
 
   /**
-   * Run a simulation with the given parameters.
-   * @param {Object} params
-   * @param {string} params.strategy - 'lump-sum' | 'dca-dollar' | 'dca-share'
-   * @param {number} params.amount - dollar amount or share count depending on strategy
-   * @param {string} params.startDate - 'YYYY-MM'
-   * @param {string} params.endDate - 'YYYY-MM'
-   * @param {string} params.dividendStrategy - 'reinvest' | 'deposit'
-   * @param {number} params.depositRate - annual rate for fixed deposit (e.g. 1.5 for 1.5%)
-   * @returns {Object} simulation results
+   * Build a Map<'YYYY-MM', number> of monthly buy prices.
+   * If CSV data is available, use the selected priceType column.
+   * Otherwise, use the first trading day's close from JSON.
    */
-  run(params) {
-    const { strategy, amount, startDate, endDate, dividendStrategy, depositRate } = params;
+  _buildMonthlyPrices(priceType) {
+    const mp = new Map();
 
-    const startYM = startDate;     // 'YYYY-MM'
-    const endYM = endDate;         // 'YYYY-MM'
-
-    // Build lookup structures
-    const priceByDate = new Map();
-    for (const p of this.prices) {
-      priceByDate.set(p.date, p.close);
-    }
-
-    // Get sorted unique months in range
-    const allDates = this.prices
-      .map(p => p.date)
-      .filter(d => {
-        const ym = d.substring(0, 7);
-        return ym >= startYM && ym <= endYM;
-      })
-      .sort();
-
-    if (allDates.length === 0) {
-      return { error: '所選日期範圍內沒有可用的價格資料' };
-    }
-
-    // Group dates by month, pick the first trading day of each month
-    const monthFirstDay = new Map();
-    for (const d of allDates) {
-      const ym = d.substring(0, 7);
-      if (!monthFirstDay.has(ym)) {
-        monthFirstDay.set(ym, d);
+    if (this.csvData && this.csvData.prices) {
+      for (const p of this.csvData.prices) {
+        const val = p[priceType];
+        if (val != null && !isNaN(val)) {
+          mp.set(p.date, val);
+        }
+      }
+    } else {
+      // From JSON daily data: first trading day's close per month
+      const sorted = [...this.jsonPrices].sort((a, b) => a.date.localeCompare(b.date));
+      for (const p of sorted) {
+        const ym = p.date.substring(0, 7);
+        if (!mp.has(ym)) {
+          mp.set(ym, p.close);
+        }
       }
     }
 
-    // Get dividends in range
-    const dividendsInRange = this.dividends.filter(d => {
+    return mp;
+  }
+
+  /**
+   * Build a Map<'YYYY-MM', number> for end-of-month valuation.
+   * CSV: use avg price (most representative). JSON: last trading day's close.
+   */
+  _buildValuationPrices() {
+    const vp = new Map();
+
+    if (this.csvData && this.csvData.prices) {
+      for (const p of this.csvData.prices) {
+        // For valuation, prefer avg, fallback to high/low midpoint
+        const val = p.avg != null ? p.avg
+                  : (p.high != null && p.low != null) ? (p.high + p.low) / 2
+                  : p.high || p.low;
+        if (val != null) vp.set(p.date, val);
+      }
+    } else {
+      const sorted = [...this.jsonPrices].sort((a, b) => a.date.localeCompare(b.date));
+      for (const p of sorted) {
+        const ym = p.date.substring(0, 7);
+        vp.set(ym, p.close); // keeps overwriting → last day of month
+      }
+    }
+
+    return vp;
+  }
+
+  /**
+   * Run a simulation.
+   * @param {Object} params
+   * @param {string} params.strategy       - 'lump-sum' | 'dca-dollar' | 'dca-share'
+   * @param {number} params.amount         - dollar amount or share count
+   * @param {string} params.startDate      - 'YYYY-MM'
+   * @param {string} params.endDate        - 'YYYY-MM'
+   * @param {string} params.dividendStrategy - 'reinvest' | 'deposit'
+   * @param {number} params.depositRate    - annual rate (e.g. 1.5 for 1.5%)
+   * @param {string} params.priceType      - 'high' | 'low' | 'avg' (CSV) or ignored (JSON)
+   * @returns {Object} simulation results
+   */
+  run(params) {
+    const { strategy, amount, startDate, endDate, dividendStrategy, depositRate, priceType } = params;
+
+    const buyPrices = this._buildMonthlyPrices(priceType || 'avg');
+    const valPrices = this._buildValuationPrices();
+
+    // Get months in range that have price data
+    const allMonths = [...buyPrices.keys()]
+      .filter(ym => ym >= startDate && ym <= endDate)
+      .sort();
+
+    if (allMonths.length === 0) {
+      return { error: '所選日期範圍內沒有可用的價格資料' };
+    }
+
+    // Build dividend lookup: month → [{date, amount}]
+    const divByMonth = new Map();
+    for (const d of this.dividends) {
       const ym = d.date.substring(0, 7);
-      return ym >= startYM && ym <= endYM;
-    });
+      if (ym >= startDate && ym <= endDate) {
+        if (!divByMonth.has(ym)) divByMonth.set(ym, []);
+        divByMonth.get(ym).push(d);
+      }
+    }
 
     // State
     let totalShares = 0;
-    let totalInvested = 0;        // total cash put in (before fees)
+    let totalInvested = 0;
     let totalFees = 0;
     let totalDividendReceived = 0;
-    let depositBalance = 0;       // cash from dividends if not reinvesting
-    const transactions = [];
-    const portfolioHistory = [];  // [{date, totalValue, invested, shares}]
+    let depositBalance = 0;
+    const monthlyDetails = [];
 
-    // Process each month
-    const months = [...monthFirstDay.keys()].sort();
+    for (const ym of allMonths) {
+      const buyPrice = buyPrices.get(ym);
+      const valPrice = valPrices.get(ym) || buyPrice;
 
-    for (const ym of months) {
-      const buyDate = monthFirstDay.get(ym);
-      const buyPrice = priceByDate.get(buyDate);
+      let monthSharesBought = 0;
+      let monthInvestment = 0;
+      let monthBuyFee = 0;
+      let monthDividend = 0;
+      let monthDivShares = 0;
 
-      // --- Handle dividends that fall in this month ---
-      const monthDividends = dividendsInRange.filter(d => d.date.substring(0, 7) === ym);
-      for (const div of monthDividends) {
+      // --- Handle dividends in this month ---
+      const monthDivs = divByMonth.get(ym) || [];
+      for (const div of monthDivs) {
         if (totalShares > 0) {
           const divAmount = totalShares * div.amount;
           totalDividendReceived += divAmount;
+          monthDividend += divAmount;
 
           if (dividendStrategy === 'reinvest') {
-            // Reinvest: buy shares with dividend
             const divShares = Math.floor(divAmount / buyPrice);
             if (divShares > 0) {
               const cost = divShares * buyPrice;
               const fee = Math.floor(cost * COST.BUY_COMMISSION);
               totalShares += divShares;
               totalFees += fee;
-
-              transactions.push({
-                date: div.date,
-                type: '股利再投入',
-                price: buyPrice,
-                shares: divShares,
-                amount: cost,
-                fee: fee,
-                totalShares: totalShares,
-              });
+              monthDivShares += divShares;
             }
-            // Remainder stays as cash (small amount, ignored for simplicity)
           } else {
-            // Fixed deposit: accumulate with interest
             depositBalance += divAmount;
-
-            transactions.push({
-              date: div.date,
-              type: '股利入帳',
-              price: '-',
-              shares: '-',
-              amount: divAmount,
-              fee: 0,
-              totalShares: totalShares,
-            });
           }
         }
       }
 
-      // --- Buy shares based on strategy ---
+      // --- Buy shares ---
       if (strategy === 'lump-sum') {
-        // Only buy on the first month
-        if (ym === months[0]) {
+        if (ym === allMonths[0]) {
           const sharesToBuy = Math.floor(amount / buyPrice);
           if (sharesToBuy > 0) {
             const cost = sharesToBuy * buyPrice;
@@ -141,20 +171,12 @@ class Simulator {
             totalShares += sharesToBuy;
             totalInvested += cost + fee;
             totalFees += fee;
-
-            transactions.push({
-              date: buyDate,
-              type: '買入',
-              price: buyPrice,
-              shares: sharesToBuy,
-              amount: cost,
-              fee: fee,
-              totalShares: totalShares,
-            });
+            monthSharesBought = sharesToBuy;
+            monthInvestment = cost + fee;
+            monthBuyFee = fee;
           }
         }
       } else if (strategy === 'dca-dollar') {
-        // Fixed dollar amount each month
         const sharesToBuy = Math.floor(amount / buyPrice);
         if (sharesToBuy > 0) {
           const cost = sharesToBuy * buyPrice;
@@ -162,72 +184,65 @@ class Simulator {
           totalShares += sharesToBuy;
           totalInvested += cost + fee;
           totalFees += fee;
-
-          transactions.push({
-            date: buyDate,
-            type: '買入',
-            price: buyPrice,
-            shares: sharesToBuy,
-            amount: cost,
-            fee: fee,
-            totalShares: totalShares,
-          });
+          monthSharesBought = sharesToBuy;
+          monthInvestment = cost + fee;
+          monthBuyFee = fee;
         }
       } else if (strategy === 'dca-share') {
-        // Fixed share count each month
         const sharesToBuy = amount;
         const cost = sharesToBuy * buyPrice;
         const fee = Math.floor(cost * COST.BUY_COMMISSION);
         totalShares += sharesToBuy;
         totalInvested += cost + fee;
         totalFees += fee;
-
-        transactions.push({
-          date: buyDate,
-          type: '買入',
-          price: buyPrice,
-          shares: sharesToBuy,
-          amount: cost,
-          fee: fee,
-          totalShares: totalShares,
-        });
+        monthSharesBought = sharesToBuy;
+        monthInvestment = cost + fee;
+        monthBuyFee = fee;
       }
 
-      // --- Apply monthly interest to deposit balance ---
+      // --- Apply monthly interest on deposit ---
       if (dividendStrategy === 'deposit' && depositBalance > 0) {
         const monthlyRate = (depositRate / 100) / 12;
         depositBalance *= (1 + monthlyRate);
       }
 
-      // --- Record portfolio value (use last price of the month) ---
-      const monthDates = allDates.filter(d => d.substring(0, 7) === ym);
-      const lastDateOfMonth = monthDates[monthDates.length - 1];
-      const lastPrice = priceByDate.get(lastDateOfMonth);
-      const marketValue = totalShares * lastPrice;
+      // --- Record monthly details ---
+      const marketValue = totalShares * valPrice;
 
-      portfolioHistory.push({
-        date: lastDateOfMonth,
-        marketValue: marketValue,
-        invested: totalInvested,
-        shares: totalShares,
+      monthlyDetails.push({
+        month: ym,
+        buyPrice: buyPrice,
+        sharesBought: monthSharesBought,
+        investment: Math.round(monthInvestment),
+        buyFee: Math.round(monthBuyFee),
+        dividendReceived: Math.round(monthDividend),
+        dividendShares: monthDivShares,
+        totalShares: totalShares,
+        totalInvested: Math.round(totalInvested),
         depositBalance: Math.round(depositBalance),
-        totalValue: marketValue + Math.round(depositBalance),
+        marketValue: Math.round(marketValue),
+        totalValue: Math.round(marketValue + depositBalance),
       });
     }
 
     // Final calculations
-    const lastEntry = portfolioHistory[portfolioHistory.length - 1];
-    const finalMarketValue = lastEntry.marketValue;
+    const last = monthlyDetails[monthlyDetails.length - 1];
+    const finalMarketValue = last.marketValue;
     const sellFee = Math.floor(finalMarketValue * (COST.SELL_COMMISSION + COST.SELL_TAX));
     const netProceeds = finalMarketValue - sellFee;
     const totalAssets = netProceeds + Math.round(depositBalance);
-    const totalReturn = totalInvested > 0 ? ((totalAssets - totalInvested) / totalInvested) * 100 : 0;
+    const totalReturn = totalInvested > 0
+      ? ((totalAssets - totalInvested) / totalInvested) * 100 : 0;
 
     // Annualized return
-    const firstDate = new Date(allDates[0]);
-    const lastDate = new Date(allDates[allDates.length - 1]);
-    const years = (lastDate - firstDate) / (365.25 * 24 * 60 * 60 * 1000);
-    const annualizedReturn = years > 0
+    const firstMonth = allMonths[0];
+    const lastMonth = allMonths[allMonths.length - 1];
+    const y1 = parseInt(firstMonth.substring(0, 4));
+    const m1 = parseInt(firstMonth.substring(5, 7));
+    const y2 = parseInt(lastMonth.substring(0, 4));
+    const m2 = parseInt(lastMonth.substring(5, 7));
+    const years = ((y2 - y1) * 12 + (m2 - m1)) / 12;
+    const annualizedReturn = (years > 0 && totalInvested > 0)
       ? (Math.pow(totalAssets / totalInvested, 1 / years) - 1) * 100
       : 0;
 
@@ -242,9 +257,9 @@ class Simulator {
       totalReturn: totalReturn,
       annualizedReturn: annualizedReturn,
       totalShares: totalShares,
-      transactions: transactions,
-      portfolioHistory: portfolioHistory,
+      monthlyDetails: monthlyDetails,
       years: years,
+      usingCSV: !!(this.csvData && this.csvData.prices),
     };
   }
 }

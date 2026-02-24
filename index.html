@@ -18,6 +18,18 @@
     <section class="config-panel">
       <h2>模擬設定</h2>
 
+      <!-- CSV Upload -->
+      <div class="csv-upload-section">
+        <label class="csv-upload-label" for="csv-upload">
+          <span class="csv-icon">📂</span>
+          上傳歷史資料 CSV（選用 — 支援最高價／最低價／加權平均價）
+        </label>
+        <div class="csv-upload-row">
+          <input type="file" id="csv-upload" accept=".csv,.txt">
+          <span class="csv-status" id="csv-status"></span>
+        </div>
+      </div>
+
       <div class="form-grid">
         <div class="form-group">
           <label for="etf-select">選擇ETF</label>
@@ -28,6 +40,15 @@
             <option value="00878">00878 國泰永續高股息</option>
             <option value="00919">00919 群益台灣精選高息</option>
             <option value="00713">00713 元大台灣高息低波</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="price-type-select">購買價格</label>
+          <select id="price-type-select">
+            <option value="avg">加權(A/B)平均價</option>
+            <option value="high">最高價 (High)</option>
+            <option value="low">最低價 (Low)</option>
           </select>
         </div>
 
@@ -85,8 +106,12 @@
 
       <button id="run-simulation" class="btn-primary">開始模擬</button>
 
+      <div id="price-type-note" class="price-type-note hidden">
+        <strong>提示：</strong>未上傳 CSV 時，三種價格選項均使用 JSON 資料的收盤價。上傳 CSV 後可使用實際最高價、最低價、加權平均價。
+      </div>
+
       <div id="data-notice" class="data-notice hidden">
-        <strong>注意：</strong>目前使用模擬產生的範例資料。如需真實歷史資料，請執行 <code>python fetch_data.py</code> 下載後重新整理頁面。
+        <strong>注意：</strong>目前使用模擬產生的範例資料。如需真實歷史資料，請上傳 CSV 檔案或執行 <code>python fetch_data.py</code> 下載後重新整理頁面。
       </div>
     </section>
 
@@ -131,18 +156,21 @@
       </div>
 
       <div class="details-section">
-        <h3>交易明細</h3>
+        <h3>每月交易明細</h3>
         <div class="table-wrapper">
-          <table id="transaction-table">
+          <table id="monthly-table">
             <thead>
               <tr>
-                <th>日期</th>
-                <th>類型</th>
-                <th>股價</th>
-                <th>股數</th>
-                <th>金額</th>
+                <th>月份</th>
+                <th>買入價</th>
+                <th>買入股數</th>
+                <th>投入金額</th>
                 <th>手續費</th>
+                <th>股利</th>
                 <th>累計持股</th>
+                <th>累計成本</th>
+                <th>月末市值</th>
+                <th>報酬率</th>
               </tr>
             </thead>
             <tbody></tbody>
