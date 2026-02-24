@@ -116,7 +116,7 @@ class Simulator {
    * @param {number} params.amount         - dollar amount or share count
    * @param {string} params.startDate      - 'YYYY-MM'
    * @param {string} params.endDate        - 'YYYY-MM'
-   * @param {string} params.dividendStrategy - 'reinvest' | 'deposit'
+   * @param {string} params.dividendStrategy - 'reinvest' | 'deposit' | 'consumed'
    * @param {number} params.depositRate    - annual rate (e.g. 1.5 for 1.5%)
    * @param {string} params.priceType      - 'high' | 'low' | 'avg' (CSV) or ignored (JSON)
    * @returns {Object} simulation results
@@ -181,9 +181,10 @@ class Simulator {
               totalFees += fee;
               monthDivShares += divShares;
             }
-          } else {
+          } else if (dividendStrategy === 'deposit') {
             depositBalance += divAmount;
           }
+          // 'consumed': dividend received but not reinvested or saved
         }
       }
 

@@ -2,6 +2,7 @@
  * UI controller — wires DOM elements to the Simulator engine.
  * Supports both JSON data and user-uploaded CSV (price + dividend).
  * Persists uploaded data to localStorage so users don't re-upload each visit.
+ * Runs all 3 dividend strategies and renders comparison chart.
  */
 
 let currentETFData = null;       // JSON data (prices + dividends)
@@ -9,6 +10,12 @@ let currentCSVData = null;       // Parsed CSV price data (monthly prices) or nu
 let currentDividendCSV = null;   // Parsed CSV dividend data or null
 let portfolioChart = null;
 let dividendChart = null;
+
+const DIVIDEND_STRATEGIES = [
+  { key: 'reinvest', label: '股利再投入', color: '#1a73e8' },
+  { key: 'deposit',  label: '股利定存',   color: '#0d9488' },
+  { key: 'consumed', label: '股利花掉',   color: '#f59e0b' },
+];
 
 // --- DOM refs ---
 const etfSelect              = document.getElementById('etf-select');
@@ -98,7 +105,6 @@ csvUpload.addEventListener('change', (e) => {
       csvStatus.textContent = `✅ 已載入 ${months} 個月的資料（${from} ~ ${to}）`;
       csvStatus.className = 'csv-status csv-ok';
 
-      // Update date range inputs to match CSV
       const startInput = document.getElementById('start-date');
       const endInput = document.getElementById('end-date');
       startInput.min = from;
@@ -214,7 +220,6 @@ btnDownloadJson.addEventListener('click', async () => {
 function loadPersistedData() {
   const ticker = etfSelect.value;
 
-  // Load saved price CSV data
   const savedPrice = loadSavedData(ticker, 'price');
   if (savedPrice && !currentCSVData) {
     currentCSVData = savedPrice;
@@ -234,7 +239,6 @@ function loadPersistedData() {
     if (endInput.value > to || endInput.value < from) endInput.value = to;
   }
 
-  // Load saved dividend CSV data
   const savedDiv = loadSavedData(ticker, 'dividend');
   if (savedDiv && !currentDividendCSV) {
     currentDividendCSV = savedDiv;
@@ -267,7 +271,6 @@ async function updateDateRange() {
   currentETFData = await loadETFData(ticker);
 
   if (!currentETFData || currentETFData.prices.length === 0) {
-    // If JSON fails but we have CSV, create a minimal etfData stub
     if (currentCSVData) {
       currentETFData = {
         ticker: ticker,
@@ -283,7 +286,6 @@ async function updateDateRange() {
   }
 
   if (!currentCSVData) {
-    // Set date range from JSON data
     const dates = currentETFData.prices.map(p => p.date).sort();
     if (dates.length > 0) {
       const minYM = dates[0].substring(0, 7);
@@ -302,7 +304,6 @@ async function updateDateRange() {
     }
   }
 
-  // Show notice if using sample data
   const notice = document.getElementById('data-notice');
   if (currentETFData.isSampleData) {
     notice.classList.remove('hidden');
@@ -322,18 +323,15 @@ function fmtPct(n) {
 
 // --- Run simulation ---
 runBtn.addEventListener('click', async () => {
-  // Ensure data is loaded
   if (!currentETFData) {
     await updateDateRange();
   }
 
-  // If still no JSON data and no CSV, show error
   if (!currentETFData && !currentCSVData) {
     alert('無法載入資料。請上傳 CSV 檔案，或確認 data/ 資料夾中有對應的 JSON 檔案。\n\n提示：如果直接開啟 HTML 檔案，瀏覽器可能阻擋資料載入。請嘗試使用本地伺服器（如 python -m http.server）。');
     return;
   }
 
-  // Create a minimal stub if JSON failed but CSV is available
   if (!currentETFData) {
     currentETFData = {
       ticker: etfSelect.value,
@@ -349,31 +347,41 @@ runBtn.addEventListener('click', async () => {
   else if (strat === 'dca-dollar') amount = Number(document.getElementById('dca-dollar-amount').value);
   else amount = Number(document.getElementById('dca-share-amount').value);
 
-  const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
-  const result = sim.run({
+  const selectedDivStrategy = dividendStrategySelect.value;
+  const depositRate = Number(document.getElementById('deposit-rate').value);
+
+  const baseParams = {
     strategy: strat,
     amount: amount,
     startDate: document.getElementById('start-date').value,
     endDate: document.getElementById('end-date').value,
-    dividendStrategy: dividendStrategySelect.value,
-    depositRate: Number(document.getElementById('deposit-rate').value),
+    depositRate: depositRate,
     priceType: priceTypeSelect.value,
-  });
+  };
 
-  if (result.error) {
-    alert(result.error);
-    return;
+  // Run all 3 dividend strategies for comparison chart
+  const allResults = {};
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
+    const result = sim.run({ ...baseParams, dividendStrategy: ds.key });
+    if (result.error) {
+      alert(result.error);
+      return;
+    }
+    allResults[ds.key] = result;
   }
 
-  renderResults(result);
+  const selectedResult = allResults[selectedDivStrategy];
+
+  renderResults(selectedResult, allResults, selectedDivStrategy);
 });
 
 // --- Render results ---
-function renderResults(r) {
+function renderResults(r, allResults, selectedStrategy) {
   const panel = document.getElementById('results-panel');
   panel.classList.remove('hidden');
 
-  // Summary cards
+  // Summary cards — show selected strategy
   document.getElementById('total-cost').textContent = `$${fmt(r.totalInvested)}`;
   document.getElementById('market-value').textContent = `$${fmt(r.finalMarketValue)}`;
   document.getElementById('total-dividends').textContent = `$${fmt(r.totalDividendReceived)}`;
@@ -389,45 +397,59 @@ function renderResults(r) {
   annRetEl.textContent = fmtPct(r.annualizedReturn);
   annRetEl.className = 'card-value ' + (r.annualizedReturn >= 0 ? 'positive' : 'negative');
 
-  renderPortfolioChart(r.monthlyDetails);
-  renderDividendChart(r.monthlyDetails);
+  renderPortfolioChart(allResults, selectedStrategy);
+  renderDividendChart(allResults, selectedStrategy);
   renderMonthlyTable(r.monthlyDetails);
 
-  // Scroll to results
   panel.scrollIntoView({ behavior: 'smooth' });
 }
 
 // --- Charts ---
-function renderPortfolioChart(details) {
+function renderPortfolioChart(allResults, selectedStrategy) {
   const ctx = document.getElementById('portfolio-chart').getContext('2d');
   if (portfolioChart) portfolioChart.destroy();
+
+  // Build one dataset per strategy; highlight selected, dim others
+  const datasets = [];
+
+  // Add cost baseline (always shown, dashed grey)
+  const anyDetails = allResults[DIVIDEND_STRATEGIES[0].key].monthlyDetails;
+  datasets.push({
+    label: '累計投入成本',
+    data: anyDetails.map(d => d.totalInvested),
+    borderColor: '#94a3b8',
+    borderDash: [5, 5],
+    fill: false,
+    tension: 0,
+    pointRadius: 0,
+    pointHitRadius: 8,
+    borderWidth: 1.5,
+    order: 10,
+  });
+
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const isSelected = ds.key === selectedStrategy;
+    const details = allResults[ds.key].monthlyDetails;
+    datasets.push({
+      label: ds.label,
+      data: details.map(d => d.totalValue),
+      borderColor: ds.color,
+      backgroundColor: isSelected ? hexToRgba(ds.color, 0.08) : 'transparent',
+      fill: isSelected,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHitRadius: 8,
+      borderWidth: isSelected ? 3 : 1.5,
+      borderDash: isSelected ? [] : [4, 4],
+      order: isSelected ? 0 : 5,
+    });
+  }
 
   portfolioChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: details.map(d => d.month + '-01'), // need date-like string for time axis
-      datasets: [
-        {
-          label: '總資產價值',
-          data: details.map(d => d.totalValue),
-          borderColor: '#1a73e8',
-          backgroundColor: 'rgba(26,115,232,0.08)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: 0,
-          pointHitRadius: 8,
-        },
-        {
-          label: '累計投入成本',
-          data: details.map(d => d.totalInvested),
-          borderColor: '#94a3b8',
-          borderDash: [5, 5],
-          fill: false,
-          tension: 0,
-          pointRadius: 0,
-          pointHitRadius: 8,
-        },
-      ],
+      labels: anyDetails.map(d => d.month + '-01'),
+      datasets: datasets,
     },
     options: {
       responsive: true,
@@ -453,13 +475,20 @@ function renderPortfolioChart(details) {
   });
 }
 
-function renderDividendChart(details) {
+function renderDividendChart(allResults, selectedStrategy) {
   const ctx = document.getElementById('dividend-chart').getContext('2d');
   if (dividendChart) dividendChart.destroy();
 
-  const divMonths = details.filter(d => d.dividendReceived > 0);
+  // Build datasets for each strategy's cumulative dividends
+  const anyDetails = allResults[DIVIDEND_STRATEGIES[0].key].monthlyDetails;
 
-  if (divMonths.length === 0) {
+  // Check if any strategy has dividends
+  let hasDividends = false;
+  for (const ds of DIVIDEND_STRATEGIES) {
+    if (allResults[ds.key].totalDividendReceived > 0) { hasDividends = true; break; }
+  }
+
+  if (!hasDividends) {
     dividendChart = new Chart(ctx, {
       type: 'bar',
       data: { labels: ['無股利紀錄'], datasets: [{ data: [0] }] },
@@ -468,17 +497,39 @@ function renderDividendChart(details) {
     return;
   }
 
+  // Show cumulative dividend value (reinvest=market value of div shares, deposit=balance, consumed=cash out)
+  const datasets = [];
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const isSelected = ds.key === selectedStrategy;
+    const details = allResults[ds.key].monthlyDetails;
+
+    // Cumulative dividend received
+    let cumDiv = 0;
+    const cumData = details.map(d => {
+      cumDiv += d.dividendReceived;
+      return cumDiv;
+    });
+
+    datasets.push({
+      label: ds.label,
+      data: cumData,
+      borderColor: ds.color,
+      backgroundColor: isSelected ? hexToRgba(ds.color, 0.15) : 'transparent',
+      fill: isSelected,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHitRadius: 8,
+      borderWidth: isSelected ? 3 : 1.5,
+      borderDash: isSelected ? [] : [4, 4],
+      order: isSelected ? 0 : 5,
+    });
+  }
+
   dividendChart = new Chart(ctx, {
-    type: 'bar',
+    type: 'line',
     data: {
-      labels: divMonths.map(d => d.month + '-01'),
-      datasets: [{
-        label: '股利金額',
-        data: divMonths.map(d => d.dividendReceived),
-        backgroundColor: 'rgba(13,148,136,0.65)',
-        borderColor: '#0d9488',
-        borderWidth: 1,
-      }],
+      labels: anyDetails.map(d => d.month + '-01'),
+      datasets: datasets,
     },
     options: {
       responsive: true,
@@ -494,7 +545,7 @@ function renderDividendChart(details) {
       plugins: {
         tooltip: {
           callbacks: {
-            label: ctx => `$${ctx.parsed.y.toLocaleString()}`,
+            label: ctx => `${ctx.dataset.label}: $${Math.round(ctx.parsed.y).toLocaleString()}`,
           },
         },
       },
@@ -502,7 +553,15 @@ function renderDividendChart(details) {
   });
 }
 
-// --- Monthly Transaction Details Table ---
+// --- Utility ---
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// --- Monthly Transaction Details Table (selected strategy only) ---
 function renderMonthlyTable(details) {
   const tbody = document.querySelector('#monthly-table tbody');
   tbody.innerHTML = '';
@@ -513,9 +572,6 @@ function renderMonthlyTable(details) {
       ? ((d.totalValue - d.totalInvested) / d.totalInvested * 100)
       : 0;
     const returnClass = returnPct >= 0 ? 'positive' : 'negative';
-
-    // Highlight rows with activity (buy or dividend)
-    const hasActivity = d.sharesBought > 0 || d.dividendReceived > 0;
 
     tr.innerHTML = `
       <td>${d.month}</td>

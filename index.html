@@ -186,6 +186,7 @@
           <select id="dividend-strategy">
             <option value="reinvest">股利再投入 (Reinvest)</option>
             <option value="deposit">股利定存 (Fixed deposit)</option>
+            <option value="consumed">股利花掉 (All consumed)</option>
           </select>
         </div>
 
@@ -279,8 +280,474 @@
     <p>資料來源：歷史股價與配息資料 ｜ 僅供模擬參考，不構成投資建議</p>
   </footer>
 
-  <script src="js/data.js"></script>
-  <script src="js/simulator.js"></script>
-  <script src="js/ui.js"></script>
+  <!-- Inline JS: data.js -->
+  <script>
+const ETF_INFO = {
+  '0050':   { name: '元大台灣50' },
+  '0056':   { name: '元大高股息' },
+  '006208': { name: '富邦台50' },
+  '00878':  { name: '國泰永續高股息' },
+  '00919':  { name: '群益台灣精選高息' },
+  '00713':  { name: '元大台灣高息低波' },
+};
+
+function parseETFCSV(csvText) {
+  if (csvText.charCodeAt(0) === 0xFEFF) csvText = csvText.slice(1);
+  const lines = csvText.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return { error: '檔案內容不足，至少需要標題列和一行資料' };
+  const header = splitCSVLine(lines[0]);
+  const highCol = findCol(header, /最高/);
+  const lowCol  = findCol(header, /最低/);
+  const avgCol  = findCol(header, /加權|平均/);
+  if (highCol === -1 && lowCol === -1 && avgCol === -1) {
+    return { error: '找不到價格欄位（最高價、最低價、加權平均價），請確認 CSV 標題列' };
+  }
+  const yearCol  = findCol(header, /年度|西元/i);
+  const monthCol = findCol(header, /^月份$/i);
+  const dateCol  = findCol(header, /日期|年月|date|期間/i, 0);
+  const splitDate = (yearCol >= 0 && monthCol >= 0);
+  const monthly = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    if (cols.length < 2) continue;
+    let ym;
+    if (splitDate) {
+      const year  = cols[yearCol]  ? cols[yearCol].trim()  : '';
+      const month = cols[monthCol] ? cols[monthCol].trim() : '';
+      if (!year || !month) continue;
+      const y = parseInt(year), m = parseInt(month);
+      if (isNaN(y) || isNaN(m)) continue;
+      const westernYear = y < 1911 ? y + 1911 : y;
+      ym = `${westernYear}-${String(m).padStart(2, '0')}`;
+    } else {
+      const rawDate = cols[dateCol] ? cols[dateCol].trim() : '';
+      ym = normalizeToYM(rawDate);
+    }
+    if (!ym) continue;
+    const high = highCol >= 0 ? parseNum(cols[highCol]) : NaN;
+    const low  = lowCol  >= 0 ? parseNum(cols[lowCol])  : NaN;
+    const avg  = avgCol  >= 0 ? parseNum(cols[avgCol])  : NaN;
+    if (isNaN(high) && isNaN(low) && isNaN(avg)) continue;
+    if (monthly.has(ym)) {
+      const e = monthly.get(ym);
+      if (!isNaN(high)) e.high = Math.max(e.high, high);
+      if (!isNaN(low))  e.low  = Math.min(e.low, low);
+      if (!isNaN(avg))  { e.avgSum += avg; e.avgN++; }
+    } else {
+      monthly.set(ym, { high: isNaN(high)?null:high, low: isNaN(low)?null:low, avgSum: isNaN(avg)?0:avg, avgN: isNaN(avg)?0:1 });
+    }
+  }
+  const prices = [];
+  for (const [ym, d] of [...monthly.entries()].sort()) {
+    prices.push({ date: ym, high: d.high, low: d.low, avg: d.avgN > 0 ? Math.round(d.avgSum / d.avgN * 100) / 100 : null });
+  }
+  if (prices.length === 0) return { error: '無法解析任何價格資料，請確認 CSV 格式和日期欄位' };
+  return { prices };
+}
+
+function splitCSVLine(line) {
+  const result = []; let cur = '', inQ = false;
+  for (const ch of line) { if (ch === '"') inQ = !inQ; else if (ch === ',' && !inQ) { result.push(cur); cur = ''; } else cur += ch; }
+  result.push(cur); return result;
+}
+function findCol(header, regex, defaultIdx) { const idx = header.findIndex(h => regex.test(h.trim())); return idx >= 0 ? idx : (defaultIdx !== undefined ? defaultIdx : -1); }
+function normalizeToYM(raw) {
+  let m;
+  m = raw.match(/^(\d{2,3})\s*[\/\-年]\s*(\d{1,2})/);
+  if (m && parseInt(m[1]) < 200) return `${parseInt(m[1]) + 1911}-${String(parseInt(m[2])).padStart(2, '0')}`;
+  m = raw.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(parseInt(m[2])).padStart(2, '0')}`;
+  m = raw.match(/^(\d{4})(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}`;
+  return null;
+}
+function parseNum(s) { if (!s) return NaN; return parseFloat(s.replace(/,/g, '').trim()); }
+
+function parseDividendCSV(csvText) {
+  if (csvText.charCodeAt(0) === 0xFEFF) csvText = csvText.slice(1);
+  const lines = csvText.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return { error: '檔案內容不足，至少需要標題列和一行資料' };
+  const header = splitCSVLine(lines[0]);
+  const dateCol = findCol(header, /除權息|除息|日期|基準|發放|record.*date|ex.*date|date/i, 0);
+  let amtCol = findCol(header, /現金股利|現金配息/i);
+  if (amtCol === -1) amtCol = findCol(header, /配息金額|每股配息|每單位配息|配發金額/i);
+  if (amtCol === -1) amtCol = findCol(header, /dividend|amount/i);
+  if (amtCol === -1) return { error: '找不到配息金額欄位（現金股利、配息金額、每股配息等），請確認 CSV 標題列' };
+  const dividends = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVLine(lines[i]);
+    if (cols.length < 2) continue;
+    const rawDate = cols[dateCol] ? cols[dateCol].trim() : '';
+    const amount = parseNum(cols[amtCol]);
+    if (isNaN(amount) || amount <= 0) continue;
+    const date = normalizeDividendDate(rawDate);
+    if (!date) continue;
+    dividends.push({ date, amount });
+  }
+  if (dividends.length === 0) return { error: '無法解析任何配息資料，請確認 CSV 格式和日期/金額欄位' };
+  dividends.sort((a, b) => a.date.localeCompare(b.date));
+  return { dividends };
+}
+
+function normalizeDividendDate(raw) {
+  let m;
+  m = raw.match(/^(\d{2,3})\s*[\/\-年]\s*(\d{1,2})\s*[\/\-月]\s*(\d{1,2})/);
+  if (m && parseInt(m[1]) < 200) { const y = parseInt(m[1]) + 1911; return `${y}-${String(parseInt(m[2])).padStart(2,'0')}-${String(parseInt(m[3])).padStart(2,'0')}`; }
+  m = raw.match(/^(\d{2,3})\s*[\/\-年]\s*(\d{1,2})/);
+  if (m && parseInt(m[1]) < 200) { const y = parseInt(m[1]) + 1911; return `${y}-${String(parseInt(m[2])).padStart(2,'0')}`; }
+  m = raw.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})\s*[\/\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(parseInt(m[2])).padStart(2,'0')}-${String(parseInt(m[3])).padStart(2,'0')}`;
+  m = raw.match(/^(\d{4})\s*[\/\-]\s*(\d{1,2})/);
+  if (m) return `${m[1]}-${String(parseInt(m[2])).padStart(2,'0')}`;
+  m = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = raw.match(/^(\d{4})(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}`;
+  return null;
+}
+
+const STORAGE_PREFIX = 'etf_sim_';
+function saveUploadedData(ticker, dataType, data) { localStorage.setItem(`${STORAGE_PREFIX}${ticker}_${dataType}`, JSON.stringify(data)); }
+function loadSavedData(ticker, dataType) { const raw = localStorage.getItem(`${STORAGE_PREFIX}${ticker}_${dataType}`); if (!raw) return null; try { return JSON.parse(raw); } catch { return null; } }
+function clearSavedData(ticker, dataType) { localStorage.removeItem(`${STORAGE_PREFIX}${ticker}_${dataType}`); }
+function buildMergedJSON(etfData, csvPriceData, csvDividendData) {
+  const merged = { ticker: etfData.ticker, name: etfData.name, prices: etfData.prices || [], dividends: etfData.dividends || [], lastUpdated: new Date().toISOString().substring(0, 10) };
+  if (csvDividendData && csvDividendData.dividends) {
+    const existingDates = new Set(merged.dividends.map(d => d.date));
+    for (const div of csvDividendData.dividends) { if (!existingDates.has(div.date)) merged.dividends.push(div); }
+    merged.dividends.sort((a, b) => a.date.localeCompare(b.date));
+  }
+  return JSON.stringify(merged, null, 2);
+}
+  </script>
+
+  <!-- Inline JS: simulator.js -->
+  <script>
+const COST = { BUY_COMMISSION: 0.001425, SELL_COMMISSION: 0.001425, SELL_TAX: 0.001 };
+
+class Simulator {
+  constructor(etfData, csvData = null, dividendCSV = null) {
+    this.jsonPrices = etfData.prices || [];
+    this.dividends  = this._mergeDividends(etfData.dividends || [], dividendCSV);
+    this.ticker     = etfData.ticker;
+    this.csvData    = csvData;
+  }
+
+  _mergeDividends(jsonDividends, dividendCSV) {
+    if (!dividendCSV || !dividendCSV.dividends || dividendCSV.dividends.length === 0) return jsonDividends;
+    const merged = new Map();
+    for (const d of jsonDividends) merged.set(d.date.substring(0, 7), d);
+    for (const d of dividendCSV.dividends) merged.set(d.date.substring(0, 7), d);
+    return [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  _buildMonthlyPrices(priceType) {
+    const mp = new Map();
+    if (this.csvData && this.csvData.prices) {
+      for (const p of this.csvData.prices) { const val = p[priceType]; if (val != null && !isNaN(val)) mp.set(p.date, val); }
+    } else {
+      const sorted = [...this.jsonPrices].sort((a, b) => a.date.localeCompare(b.date));
+      for (const p of sorted) { const ym = p.date.substring(0, 7); if (!mp.has(ym)) mp.set(ym, p.close); }
+    }
+    return mp;
+  }
+
+  _buildValuationPrices() {
+    const vp = new Map();
+    if (this.csvData && this.csvData.prices) {
+      for (const p of this.csvData.prices) {
+        const val = p.avg != null ? p.avg : (p.high != null && p.low != null) ? (p.high + p.low) / 2 : p.high || p.low;
+        if (val != null) vp.set(p.date, val);
+      }
+    } else {
+      const sorted = [...this.jsonPrices].sort((a, b) => a.date.localeCompare(b.date));
+      for (const p of sorted) { vp.set(p.date.substring(0, 7), p.close); }
+    }
+    return vp;
+  }
+
+  run(params) {
+    const { strategy, amount, startDate, endDate, dividendStrategy, depositRate, priceType } = params;
+    const buyPrices = this._buildMonthlyPrices(priceType || 'avg');
+    const valPrices = this._buildValuationPrices();
+    const allMonths = [...buyPrices.keys()].filter(ym => ym >= startDate && ym <= endDate).sort();
+    if (allMonths.length === 0) return { error: '所選日期範圍內沒有可用的價格資料' };
+
+    const divByMonth = new Map();
+    for (const d of this.dividends) { const ym = d.date.substring(0, 7); if (ym >= startDate && ym <= endDate) { if (!divByMonth.has(ym)) divByMonth.set(ym, []); divByMonth.get(ym).push(d); } }
+
+    let totalShares = 0, totalInvested = 0, totalFees = 0, totalDividendReceived = 0, depositBalance = 0;
+    const monthlyDetails = [];
+
+    for (const ym of allMonths) {
+      const buyPrice = buyPrices.get(ym);
+      const valPrice = valPrices.get(ym) || buyPrice;
+      let monthSharesBought = 0, monthInvestment = 0, monthBuyFee = 0, monthDividend = 0, monthDivShares = 0;
+
+      const monthDivs = divByMonth.get(ym) || [];
+      for (const div of monthDivs) {
+        if (totalShares > 0) {
+          const divAmount = totalShares * div.amount;
+          totalDividendReceived += divAmount;
+          monthDividend += divAmount;
+          if (dividendStrategy === 'reinvest') {
+            const divShares = Math.floor(divAmount / buyPrice);
+            if (divShares > 0) { const cost = divShares * buyPrice; const fee = Math.floor(cost * COST.BUY_COMMISSION); totalShares += divShares; totalFees += fee; monthDivShares += divShares; }
+          } else if (dividendStrategy === 'deposit') {
+            depositBalance += divAmount;
+          }
+        }
+      }
+
+      if (strategy === 'lump-sum') {
+        if (ym === allMonths[0]) { const s = Math.floor(amount / buyPrice); if (s > 0) { const c = s * buyPrice; const f = Math.floor(c * COST.BUY_COMMISSION); totalShares += s; totalInvested += c + f; totalFees += f; monthSharesBought = s; monthInvestment = c + f; monthBuyFee = f; } }
+      } else if (strategy === 'dca-dollar') {
+        const s = Math.floor(amount / buyPrice); if (s > 0) { const c = s * buyPrice; const f = Math.floor(c * COST.BUY_COMMISSION); totalShares += s; totalInvested += c + f; totalFees += f; monthSharesBought = s; monthInvestment = c + f; monthBuyFee = f; }
+      } else if (strategy === 'dca-share') {
+        const s = amount; const c = s * buyPrice; const f = Math.floor(c * COST.BUY_COMMISSION); totalShares += s; totalInvested += c + f; totalFees += f; monthSharesBought = s; monthInvestment = c + f; monthBuyFee = f;
+      }
+
+      if (dividendStrategy === 'deposit' && depositBalance > 0) { depositBalance *= (1 + (depositRate / 100) / 12); }
+
+      const marketValue = totalShares * valPrice;
+      monthlyDetails.push({ month: ym, buyPrice, sharesBought: monthSharesBought, investment: Math.round(monthInvestment), buyFee: Math.round(monthBuyFee), dividendReceived: Math.round(monthDividend), dividendShares: monthDivShares, totalShares, totalInvested: Math.round(totalInvested), depositBalance: Math.round(depositBalance), marketValue: Math.round(marketValue), totalValue: Math.round(marketValue + depositBalance) });
+    }
+
+    const last = monthlyDetails[monthlyDetails.length - 1];
+    const finalMarketValue = last.marketValue;
+    const sellFee = Math.floor(finalMarketValue * (COST.SELL_COMMISSION + COST.SELL_TAX));
+    const totalAssets = finalMarketValue - sellFee + Math.round(depositBalance);
+    const totalReturn = totalInvested > 0 ? ((totalAssets - totalInvested) / totalInvested) * 100 : 0;
+    const y1 = parseInt(allMonths[0].substring(0, 4)), m1 = parseInt(allMonths[0].substring(5, 7));
+    const y2 = parseInt(allMonths[allMonths.length-1].substring(0, 4)), m2 = parseInt(allMonths[allMonths.length-1].substring(5, 7));
+    const years = ((y2 - y1) * 12 + (m2 - m1)) / 12;
+    const annualizedReturn = (years > 0 && totalInvested > 0) ? (Math.pow(totalAssets / totalInvested, 1 / years) - 1) * 100 : 0;
+
+    return { totalInvested: Math.round(totalInvested), finalMarketValue: Math.round(finalMarketValue), totalDividendReceived: Math.round(totalDividendReceived), depositBalance: Math.round(depositBalance), sellFee: Math.round(sellFee), totalFees: Math.round(totalFees), totalAssets: Math.round(totalAssets), totalReturn, annualizedReturn, totalShares, monthlyDetails, years, usingCSV: !!(this.csvData && this.csvData.prices) };
+  }
+}
+  </script>
+
+  <!-- Inline JS: ui.js -->
+  <script>
+let currentETFData = null, currentCSVData = null, currentDividendCSV = null;
+let portfolioChart = null, dividendChart = null;
+
+const DIVIDEND_STRATEGIES = [
+  { key: 'reinvest', label: '股利再投入', color: '#1a73e8' },
+  { key: 'deposit',  label: '股利定存',   color: '#0d9488' },
+  { key: 'consumed', label: '股利花掉',   color: '#f59e0b' },
+];
+
+const etfSelect = document.getElementById('etf-select');
+const priceTypeSelect = document.getElementById('price-type-select');
+const strategySelect = document.getElementById('strategy-select');
+const dividendStrategySelect = document.getElementById('dividend-strategy');
+const runBtn = document.getElementById('run-simulation');
+const csvUpload = document.getElementById('csv-upload');
+const csvStatus = document.getElementById('csv-status');
+const priceTypeNote = document.getElementById('price-type-note');
+const dividendCsvUpload = document.getElementById('dividend-csv-upload');
+const dividendCsvStatus = document.getElementById('dividend-csv-status');
+const btnSaveData = document.getElementById('btn-save-data');
+const btnClearData = document.getElementById('btn-clear-data');
+const btnDownloadJson = document.getElementById('btn-download-json');
+const persistStatus = document.getElementById('persist-status');
+const lumpGroup = document.getElementById('lump-sum-group');
+const dcaDollarGroup = document.getElementById('dca-dollar-group');
+const dcaShareGroup = document.getElementById('dca-share-group');
+const depositRateGroup = document.getElementById('deposit-rate-group');
+
+function updateVisibleInputs() { const s = strategySelect.value; lumpGroup.classList.toggle('hidden', s !== 'lump-sum'); dcaDollarGroup.classList.toggle('hidden', s !== 'dca-dollar'); dcaShareGroup.classList.toggle('hidden', s !== 'dca-share'); }
+function updateDividendInputs() { depositRateGroup.classList.toggle('hidden', dividendStrategySelect.value !== 'deposit'); }
+function updatePriceTypeNote() { currentCSVData ? priceTypeNote.classList.add('hidden') : priceTypeNote.classList.remove('hidden'); }
+
+function updatePersistStatus() {
+  const ticker = etfSelect.value;
+  const hp = !!loadSavedData(ticker, 'price'), hd = !!loadSavedData(ticker, 'dividend');
+  if (hp || hd) { const parts = []; if (hp) parts.push('價格'); if (hd) parts.push('配息'); persistStatus.textContent = `💾 已儲存：${parts.join(' + ')} 資料`; persistStatus.className = 'persist-status persist-ok'; }
+  else { persistStatus.textContent = ''; persistStatus.className = 'persist-status'; }
+}
+
+strategySelect.addEventListener('change', updateVisibleInputs);
+dividendStrategySelect.addEventListener('change', updateDividendInputs);
+updateVisibleInputs(); updateDividendInputs();
+
+csvUpload.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) { currentCSVData = null; csvStatus.textContent = ''; csvStatus.className = 'csv-status'; updatePriceTypeNote(); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = parseETFCSV(reader.result);
+    if (result.error) { currentCSVData = null; csvStatus.textContent = '❌ ' + result.error; csvStatus.className = 'csv-status csv-error'; }
+    else { currentCSVData = result; const n = result.prices.length, f = result.prices[0].date, t = result.prices[n-1].date; csvStatus.textContent = `✅ 已載入 ${n} 個月的資料（${f} ~ ${t}）`; csvStatus.className = 'csv-status csv-ok'; const si = document.getElementById('start-date'), ei = document.getElementById('end-date'); si.min = f; si.max = t; ei.min = f; ei.max = t; if (si.value < f || si.value > t) si.value = f; if (ei.value > t || ei.value < f) ei.value = t; }
+    updatePriceTypeNote();
+  };
+  reader.readAsText(file);
+});
+
+dividendCsvUpload.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) { currentDividendCSV = null; dividendCsvStatus.textContent = ''; dividendCsvStatus.className = 'csv-status'; return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = parseDividendCSV(reader.result);
+    if (result.error) { currentDividendCSV = null; dividendCsvStatus.textContent = '❌ ' + result.error; dividendCsvStatus.className = 'csv-status csv-error'; }
+    else { currentDividendCSV = result; const c = result.dividends.length, f = result.dividends[0].date, t = result.dividends[c-1].date; dividendCsvStatus.textContent = `✅ 已載入 ${c} 筆配息紀錄（${f} ~ ${t}）`; dividendCsvStatus.className = 'csv-status csv-ok'; }
+  };
+  reader.readAsText(file);
+});
+
+etfSelect.addEventListener('change', () => {
+  currentCSVData = null; currentDividendCSV = null; csvUpload.value = ''; dividendCsvUpload.value = '';
+  csvStatus.textContent = ''; csvStatus.className = 'csv-status'; dividendCsvStatus.textContent = ''; dividendCsvStatus.className = 'csv-status';
+  updatePriceTypeNote(); updateDateRange(); loadPersistedData();
+});
+
+btnSaveData.addEventListener('click', () => {
+  const ticker = etfSelect.value; let saved = false;
+  if (currentCSVData) { saveUploadedData(ticker, 'price', currentCSVData); saved = true; }
+  if (currentDividendCSV) { saveUploadedData(ticker, 'dividend', currentDividendCSV); saved = true; }
+  if (saved) { persistStatus.textContent = '✅ 資料已儲存，下次開啟將自動載入'; persistStatus.className = 'persist-status persist-ok'; }
+  else { persistStatus.textContent = '⚠️ 沒有上傳的資料可儲存'; persistStatus.className = 'persist-status persist-warn'; }
+  setTimeout(updatePersistStatus, 3000);
+});
+
+btnClearData.addEventListener('click', () => {
+  const ticker = etfSelect.value; clearSavedData(ticker, 'price'); clearSavedData(ticker, 'dividend');
+  persistStatus.textContent = '🗑️ 已清除儲存的資料'; persistStatus.className = 'persist-status'; setTimeout(updatePersistStatus, 3000);
+});
+
+btnDownloadJson.addEventListener('click', async () => {
+  const ticker = etfSelect.value;
+  if (!currentETFData) await updateDateRange();
+  if (!currentETFData) { alert('無法載入基礎 JSON 資料'); return; }
+  const jsonStr = buildMergedJSON(currentETFData, currentCSVData, currentDividendCSV);
+  const blob = new Blob([jsonStr], { type: 'application/json' }); const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `${ticker}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+});
+
+function loadPersistedData() {
+  const ticker = etfSelect.value;
+  const savedPrice = loadSavedData(ticker, 'price');
+  if (savedPrice && !currentCSVData) {
+    currentCSVData = savedPrice; const n = savedPrice.prices.length, f = savedPrice.prices[0].date, t = savedPrice.prices[n-1].date;
+    csvStatus.textContent = `💾 自動載入 ${n} 個月價格資料（${f} ~ ${t}）`; csvStatus.className = 'csv-status csv-ok';
+    const si = document.getElementById('start-date'), ei = document.getElementById('end-date'); si.min = f; si.max = t; ei.min = f; ei.max = t;
+    if (si.value < f || si.value > t) si.value = f; if (ei.value > t || ei.value < f) ei.value = t;
+  }
+  const savedDiv = loadSavedData(ticker, 'dividend');
+  if (savedDiv && !currentDividendCSV) {
+    currentDividendCSV = savedDiv; const c = savedDiv.dividends.length, f = savedDiv.dividends[0].date, t = savedDiv.dividends[c-1].date;
+    dividendCsvStatus.textContent = `💾 自動載入 ${c} 筆配息紀錄（${f} ~ ${t}）`; dividendCsvStatus.className = 'csv-status csv-ok';
+  }
+  updatePriceTypeNote(); updatePersistStatus();
+}
+
+async function loadETFData(ticker) { try { const r = await fetch(`data/${ticker}.json`); if (!r.ok) throw new Error(`HTTP ${r.status}`); return await r.json(); } catch(e) { console.warn(`無法載入 ${ticker} JSON：${e.message}`); return null; } }
+
+async function updateDateRange() {
+  const ticker = etfSelect.value; currentETFData = await loadETFData(ticker);
+  if (!currentETFData || currentETFData.prices.length === 0) {
+    if (currentCSVData) { currentETFData = { ticker, name: ETF_INFO[ticker]?.name || ticker, prices: [], dividends: [] }; }
+    else { document.getElementById('data-notice').classList.remove('hidden'); return; }
+  }
+  if (!currentCSVData) {
+    const dates = currentETFData.prices.map(p => p.date).sort();
+    if (dates.length > 0) {
+      const minYM = dates[0].substring(0, 7), maxYM = dates[dates.length-1].substring(0, 7);
+      const si = document.getElementById('start-date'), ei = document.getElementById('end-date');
+      si.min = minYM; si.max = maxYM; ei.min = minYM; ei.max = maxYM;
+      if (si.value < minYM) si.value = minYM; if (ei.value > maxYM || ei.value < minYM) ei.value = maxYM; if (si.value > ei.value) si.value = minYM;
+    }
+  }
+  const notice = document.getElementById('data-notice');
+  if (currentETFData.isSampleData) notice.classList.remove('hidden'); else notice.classList.add('hidden');
+}
+
+function fmt(n) { return Math.round(n).toLocaleString('zh-TW'); }
+function fmtPct(n) { return n.toFixed(2) + '%'; }
+function hexToRgba(hex, alpha) { return `rgba(${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)},${alpha})`; }
+
+runBtn.addEventListener('click', async () => {
+  if (!currentETFData) await updateDateRange();
+  if (!currentETFData && !currentCSVData) { alert('無法載入資料。請上傳 CSV 檔案，或確認 data/ 資料夾中有對應的 JSON 檔案。\n\n提示：如果直接開啟 HTML 檔案，瀏覽器可能阻擋資料載入。請嘗試使用本地伺服器（如 python -m http.server）。'); return; }
+  if (!currentETFData) { currentETFData = { ticker: etfSelect.value, name: ETF_INFO[etfSelect.value]?.name || etfSelect.value, prices: [], dividends: [] }; }
+
+  const strat = strategySelect.value;
+  let amount;
+  if (strat === 'lump-sum') amount = Number(document.getElementById('lump-sum-amount').value);
+  else if (strat === 'dca-dollar') amount = Number(document.getElementById('dca-dollar-amount').value);
+  else amount = Number(document.getElementById('dca-share-amount').value);
+
+  const selectedDivStrategy = dividendStrategySelect.value;
+  const depositRate = Number(document.getElementById('deposit-rate').value);
+  const baseParams = { strategy: strat, amount, startDate: document.getElementById('start-date').value, endDate: document.getElementById('end-date').value, depositRate, priceType: priceTypeSelect.value };
+
+  const allResults = {};
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
+    const result = sim.run({ ...baseParams, dividendStrategy: ds.key });
+    if (result.error) { alert(result.error); return; }
+    allResults[ds.key] = result;
+  }
+  renderResults(allResults[selectedDivStrategy], allResults, selectedDivStrategy);
+});
+
+function renderResults(r, allResults, selectedStrategy) {
+  const panel = document.getElementById('results-panel'); panel.classList.remove('hidden');
+  document.getElementById('total-cost').textContent = `$${fmt(r.totalInvested)}`;
+  document.getElementById('market-value').textContent = `$${fmt(r.finalMarketValue)}`;
+  document.getElementById('total-dividends').textContent = `$${fmt(r.totalDividendReceived)}`;
+  document.getElementById('total-assets').textContent = `$${fmt(r.totalAssets)}`;
+  const returnEl = document.getElementById('total-return'); returnEl.textContent = fmtPct(r.totalReturn); returnEl.className = 'card-value ' + (r.totalReturn >= 0 ? 'positive' : 'negative');
+  const annRetEl = document.getElementById('annualized-return'); annRetEl.textContent = fmtPct(r.annualizedReturn); annRetEl.className = 'card-value ' + (r.annualizedReturn >= 0 ? 'positive' : 'negative');
+  renderPortfolioChart(allResults, selectedStrategy);
+  renderDividendChart(allResults, selectedStrategy);
+  renderMonthlyTable(r.monthlyDetails);
+  panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderPortfolioChart(allResults, selectedStrategy) {
+  const ctx = document.getElementById('portfolio-chart').getContext('2d');
+  if (portfolioChart) portfolioChart.destroy();
+  const anyDetails = allResults[DIVIDEND_STRATEGIES[0].key].monthlyDetails;
+  const datasets = [{ label: '累計投入成本', data: anyDetails.map(d => d.totalInvested), borderColor: '#94a3b8', borderDash: [5,5], fill: false, tension: 0, pointRadius: 0, pointHitRadius: 8, borderWidth: 1.5, order: 10 }];
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const isSel = ds.key === selectedStrategy; const details = allResults[ds.key].monthlyDetails;
+    datasets.push({ label: ds.label, data: details.map(d => d.totalValue), borderColor: ds.color, backgroundColor: isSel ? hexToRgba(ds.color, 0.08) : 'transparent', fill: isSel, tension: 0.3, pointRadius: 0, pointHitRadius: 8, borderWidth: isSel ? 3 : 1.5, borderDash: isSel ? [] : [4,4], order: isSel ? 0 : 5 });
+  }
+  portfolioChart = new Chart(ctx, { type: 'line', data: { labels: anyDetails.map(d => d.month + '-01'), datasets }, options: { responsive: true, interaction: { mode: 'index', intersect: false }, scales: { x: { type: 'time', time: { unit: 'month', tooltipFormat: 'yyyy-MM' }, ticks: { maxTicksLimit: 12 } }, y: { ticks: { callback: v => '$' + v.toLocaleString() } } }, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: $${Math.round(ctx.parsed.y).toLocaleString()}` } } } } });
+}
+
+function renderDividendChart(allResults, selectedStrategy) {
+  const ctx = document.getElementById('dividend-chart').getContext('2d');
+  if (dividendChart) dividendChart.destroy();
+  const anyDetails = allResults[DIVIDEND_STRATEGIES[0].key].monthlyDetails;
+  let hasDividends = false;
+  for (const ds of DIVIDEND_STRATEGIES) { if (allResults[ds.key].totalDividendReceived > 0) { hasDividends = true; break; } }
+  if (!hasDividends) { dividendChart = new Chart(ctx, { type: 'bar', data: { labels: ['無股利紀錄'], datasets: [{ data: [0] }] }, options: { plugins: { legend: { display: false } } } }); return; }
+  const datasets = [];
+  for (const ds of DIVIDEND_STRATEGIES) {
+    const isSel = ds.key === selectedStrategy; const details = allResults[ds.key].monthlyDetails;
+    let cumDiv = 0; const cumData = details.map(d => { cumDiv += d.dividendReceived; return cumDiv; });
+    datasets.push({ label: ds.label, data: cumData, borderColor: ds.color, backgroundColor: isSel ? hexToRgba(ds.color, 0.15) : 'transparent', fill: isSel, tension: 0.3, pointRadius: 0, pointHitRadius: 8, borderWidth: isSel ? 3 : 1.5, borderDash: isSel ? [] : [4,4], order: isSel ? 0 : 5 });
+  }
+  dividendChart = new Chart(ctx, { type: 'line', data: { labels: anyDetails.map(d => d.month + '-01'), datasets }, options: { responsive: true, scales: { x: { type: 'time', time: { unit: 'quarter', tooltipFormat: 'yyyy-MM' } }, y: { ticks: { callback: v => '$' + v.toLocaleString() } } }, plugins: { tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: $${Math.round(ctx.parsed.y).toLocaleString()}` } } } } });
+}
+
+function renderMonthlyTable(details) {
+  const tbody = document.querySelector('#monthly-table tbody'); tbody.innerHTML = '';
+  for (const d of details) {
+    const tr = document.createElement('tr');
+    const rp = d.totalInvested > 0 ? ((d.totalValue - d.totalInvested) / d.totalInvested * 100) : 0;
+    tr.innerHTML = `<td>${d.month}</td><td>${d.buyPrice.toFixed(2)}</td><td>${d.sharesBought > 0 ? d.sharesBought.toLocaleString() : '-'}${d.dividendShares > 0 ? ' (+' + d.dividendShares + '息)' : ''}</td><td>${d.investment > 0 ? '$' + d.investment.toLocaleString() : '-'}</td><td>${d.buyFee > 0 ? '$' + d.buyFee.toLocaleString() : '-'}</td><td>${d.dividendReceived > 0 ? '$' + d.dividendReceived.toLocaleString() : '-'}</td><td>${d.totalShares.toLocaleString()}</td><td>$${d.totalInvested.toLocaleString()}</td><td>$${d.marketValue.toLocaleString()}</td><td class="${rp >= 0 ? 'positive' : 'negative'}">${rp.toFixed(2)}%</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+updateDateRange().then(() => { loadPersistedData(); });
+updatePriceTypeNote();
+  </script>
 </body>
 </html>
