@@ -44,7 +44,6 @@ function parseETFCSV(csvText) {
   const header = splitCSVLine(lines[0]);
 
   // Find columns by name
-  const dateCol = findCol(header, /日期|年月|date|月份|期間/i, 0);
   const highCol = findCol(header, /最高/);
   const lowCol  = findCol(header, /最低/);
   const avgCol  = findCol(header, /加權|平均/);
@@ -53,6 +52,14 @@ function parseETFCSV(csvText) {
     return { error: '找不到價格欄位（最高價、最低價、加權平均價），請確認 CSV 標題列' };
   }
 
+  // Detect date column layout:
+  // Case A: split columns — 年度(西元) + 月份
+  // Case B: single date column — 日期, 年月, etc.
+  const yearCol  = findCol(header, /年度|西元/i);
+  const monthCol = findCol(header, /^月份$/i);
+  const dateCol  = findCol(header, /日期|年月|date|期間/i, 0);
+  const splitDate = (yearCol >= 0 && monthCol >= 0);
+
   // Accumulate per month
   const monthly = new Map();
 
@@ -60,8 +67,22 @@ function parseETFCSV(csvText) {
     const cols = splitCSVLine(lines[i]);
     if (cols.length < 2) continue;
 
-    const rawDate = cols[dateCol] ? cols[dateCol].trim() : '';
-    const ym = normalizeToYM(rawDate);
+    let ym;
+    if (splitDate) {
+      // Combine year + month columns → 'YYYY-MM'
+      const year  = cols[yearCol]  ? cols[yearCol].trim()  : '';
+      const month = cols[monthCol] ? cols[monthCol].trim() : '';
+      if (!year || !month) continue;
+      const y = parseInt(year);
+      const m = parseInt(month);
+      if (isNaN(y) || isNaN(m)) continue;
+      // Handle ROC year (< 1911) vs Western year
+      const westernYear = y < 1911 ? y + 1911 : y;
+      ym = `${westernYear}-${String(m).padStart(2, '0')}`;
+    } else {
+      const rawDate = cols[dateCol] ? cols[dateCol].trim() : '';
+      ym = normalizeToYM(rawDate);
+    }
     if (!ym) continue;
 
     const high = highCol >= 0 ? parseNum(cols[highCol]) : NaN;
