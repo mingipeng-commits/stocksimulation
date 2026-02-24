@@ -214,6 +214,26 @@
     <section class="results-panel hidden" id="results-panel">
       <h2>模擬結果</h2>
 
+      <div class="etf-stats hidden" id="etf-stats">
+        <h3>ETF 歷史指標</h3>
+        <div class="etf-stats-grid">
+          <div class="etf-stat-item">
+            <span class="etf-stat-label">股價年化成長率 (CAGR)</span>
+            <span class="etf-stat-value" id="etf-cagr">-</span>
+            <span class="etf-stat-sub" id="etf-cagr-detail"></span>
+          </div>
+          <div class="etf-stat-item">
+            <span class="etf-stat-label">平均年配息率</span>
+            <span class="etf-stat-value" id="etf-avg-yield">-</span>
+          </div>
+          <div class="etf-stat-item">
+            <span class="etf-stat-label">中位數年配息率</span>
+            <span class="etf-stat-value" id="etf-median-yield">-</span>
+            <span class="etf-stat-sub" id="etf-yield-detail"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="summary-cards">
         <div class="card">
           <div class="card-label">總投入成本</div>
@@ -523,6 +543,33 @@ class Simulator {
 
     return { totalInvested: Math.round(totalInvested), finalMarketValue: Math.round(finalMarketValue), totalDividendReceived: Math.round(totalDividendReceived), depositBalance: Math.round(depositBalance), sellFee: Math.round(sellFee), totalFees: Math.round(totalFees), totalAssets: Math.round(totalAssets), totalReturn, annualizedReturn, totalShares, monthlyDetails, years, usingCSV: !!(this.csvData && this.csvData.prices) };
   }
+
+  computeETFStats() {
+    const vp = this._buildValuationPrices();
+    const sortedMonths = [...vp.keys()].sort();
+    if (sortedMonths.length < 2) return null;
+    const firstMonth = sortedMonths[0], lastMonth = sortedMonths[sortedMonths.length - 1];
+    const firstPrice = vp.get(firstMonth), lastPrice = vp.get(lastMonth);
+    const y1 = parseInt(firstMonth.substring(0, 4)), m1 = parseInt(firstMonth.substring(5, 7));
+    const y2 = parseInt(lastMonth.substring(0, 4)), m2 = parseInt(lastMonth.substring(5, 7));
+    const years = ((y2 - y1) * 12 + (m2 - m1)) / 12;
+    const cagr = years > 0 ? (Math.pow(lastPrice / firstPrice, 1 / years) - 1) * 100 : 0;
+    const yearlyYield = new Map();
+    for (const div of this.dividends) {
+      const ym = div.date.substring(0, 7), year = div.date.substring(0, 4);
+      const price = vp.get(ym);
+      if (!price || price <= 0) continue;
+      yearlyYield.set(year, (yearlyYield.get(year) || 0) + div.amount / price);
+    }
+    const yields = [...yearlyYield.values()].sort((a, b) => a - b);
+    let avgYield = 0, medianYield = 0;
+    if (yields.length > 0) {
+      avgYield = (yields.reduce((s, v) => s + v, 0) / yields.length) * 100;
+      const mid = Math.floor(yields.length / 2);
+      medianYield = (yields.length % 2 === 0 ? (yields[mid - 1] + yields[mid]) / 2 : yields[mid]) * 100;
+    }
+    return { cagr, avgDividendYield: avgYield, medianDividendYield: medianYield, priceRange: `${firstMonth} ~ ${lastMonth}`, firstPrice, lastPrice, years, dividendYears: yields.length };
+  }
 }
   </script>
 
@@ -683,17 +730,20 @@ runBtn.addEventListener('click', async () => {
   const baseParams = { strategy: strat, amount, startDate: document.getElementById('start-date').value, endDate: document.getElementById('end-date').value, depositRate, priceType: priceTypeSelect.value };
 
   const allResults = {};
+  let etfStats = null;
   for (const ds of DIVIDEND_STRATEGIES) {
     const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
     const result = sim.run({ ...baseParams, dividendStrategy: ds.key });
     if (result.error) { alert(result.error); return; }
     allResults[ds.key] = result;
+    if (!etfStats) etfStats = sim.computeETFStats();
   }
-  renderResults(allResults[selectedDivStrategy], allResults, selectedDivStrategy);
+  renderResults(allResults[selectedDivStrategy], allResults, selectedDivStrategy, etfStats);
 });
 
-function renderResults(r, allResults, selectedStrategy) {
+function renderResults(r, allResults, selectedStrategy, etfStats) {
   const panel = document.getElementById('results-panel'); panel.classList.remove('hidden');
+  renderETFStats(etfStats);
   document.getElementById('total-cost').textContent = `$${fmt(r.totalInvested)}`;
   document.getElementById('market-value').textContent = `$${fmt(r.finalMarketValue)}`;
   document.getElementById('total-dividends').textContent = `$${fmt(r.totalDividendReceived)}`;
@@ -704,6 +754,23 @@ function renderResults(r, allResults, selectedStrategy) {
   renderDividendChart(allResults, selectedStrategy);
   renderMonthlyTable(r.monthlyDetails);
   panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderETFStats(stats) {
+  const el = document.getElementById('etf-stats');
+  if (!stats) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const cagrEl = document.getElementById('etf-cagr');
+  cagrEl.textContent = fmtPct(stats.cagr);
+  cagrEl.className = 'etf-stat-value ' + (stats.cagr >= 0 ? 'positive' : 'negative');
+  document.getElementById('etf-cagr-detail').textContent = `$${stats.firstPrice.toFixed(2)} → $${stats.lastPrice.toFixed(2)}（${stats.priceRange}，${stats.years.toFixed(1)} 年）`;
+  const avgEl = document.getElementById('etf-avg-yield');
+  avgEl.textContent = fmtPct(stats.avgDividendYield);
+  avgEl.className = 'etf-stat-value ' + (stats.avgDividendYield > 0 ? 'positive' : '');
+  const medEl = document.getElementById('etf-median-yield');
+  medEl.textContent = fmtPct(stats.medianDividendYield);
+  medEl.className = 'etf-stat-value ' + (stats.medianDividendYield > 0 ? 'positive' : '');
+  document.getElementById('etf-yield-detail').textContent = stats.dividendYears > 0 ? `共 ${stats.dividendYears} 年配息紀錄` : '無配息紀錄';
 }
 
 function renderPortfolioChart(allResults, selectedStrategy) {

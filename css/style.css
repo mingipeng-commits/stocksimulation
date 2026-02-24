@@ -275,6 +275,69 @@ h3 {
   margin-bottom: 2rem;
 }
 
+/* ETF Stats Section */
+.etf-stats {
+  background: var(--surface);
+  border: 1px solid #c7d2fe;
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.5rem;
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 100%);
+}
+
+.etf-stats h3 {
+  font-size: 0.95rem;
+  color: #4338ca;
+  margin-bottom: 0.75rem;
+}
+
+.etf-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.etf-stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.etf-stat-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.etf-stat-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.etf-stat-value.positive {
+  color: var(--success);
+}
+
+.etf-stat-value.negative {
+  color: var(--danger);
+}
+
+.etf-stat-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 768px) {
+  .etf-stats-grid {
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+}
+
 .summary-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));

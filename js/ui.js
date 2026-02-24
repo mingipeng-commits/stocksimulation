@@ -361,6 +361,7 @@ runBtn.addEventListener('click', async () => {
 
   // Run all 3 dividend strategies for comparison chart
   const allResults = {};
+  let etfStats = null;
   for (const ds of DIVIDEND_STRATEGIES) {
     const sim = new Simulator(currentETFData, currentCSVData, currentDividendCSV);
     const result = sim.run({ ...baseParams, dividendStrategy: ds.key });
@@ -369,17 +370,21 @@ runBtn.addEventListener('click', async () => {
       return;
     }
     allResults[ds.key] = result;
+    if (!etfStats) etfStats = sim.computeETFStats();
   }
 
   const selectedResult = allResults[selectedDivStrategy];
 
-  renderResults(selectedResult, allResults, selectedDivStrategy);
+  renderResults(selectedResult, allResults, selectedDivStrategy, etfStats);
 });
 
 // --- Render results ---
-function renderResults(r, allResults, selectedStrategy) {
+function renderResults(r, allResults, selectedStrategy, etfStats) {
   const panel = document.getElementById('results-panel');
   panel.classList.remove('hidden');
+
+  // ETF historical stats
+  renderETFStats(etfStats);
 
   // Summary cards — show selected strategy
   document.getElementById('total-cost').textContent = `$${fmt(r.totalInvested)}`;
@@ -402,6 +407,31 @@ function renderResults(r, allResults, selectedStrategy) {
   renderMonthlyTable(r.monthlyDetails);
 
   panel.scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderETFStats(stats) {
+  const el = document.getElementById('etf-stats');
+  if (!stats) {
+    el.classList.add('hidden');
+    return;
+  }
+  el.classList.remove('hidden');
+
+  const cagrEl = document.getElementById('etf-cagr');
+  cagrEl.textContent = fmtPct(stats.cagr);
+  cagrEl.className = 'etf-stat-value ' + (stats.cagr >= 0 ? 'positive' : 'negative');
+  document.getElementById('etf-cagr-detail').textContent =
+    `$${stats.firstPrice.toFixed(2)} → $${stats.lastPrice.toFixed(2)}（${stats.priceRange}，${stats.years.toFixed(1)} 年）`;
+
+  const avgEl = document.getElementById('etf-avg-yield');
+  avgEl.textContent = fmtPct(stats.avgDividendYield);
+  avgEl.className = 'etf-stat-value ' + (stats.avgDividendYield > 0 ? 'positive' : '');
+
+  const medEl = document.getElementById('etf-median-yield');
+  medEl.textContent = fmtPct(stats.medianDividendYield);
+  medEl.className = 'etf-stat-value ' + (stats.medianDividendYield > 0 ? 'positive' : '');
+  document.getElementById('etf-yield-detail').textContent =
+    stats.dividendYears > 0 ? `共 ${stats.dividendYears} 年配息紀錄` : '無配息紀錄';
 }
 
 // --- Charts ---

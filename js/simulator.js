@@ -277,4 +277,63 @@ class Simulator {
       usingCSV: !!(this.csvData && this.csvData.prices),
     };
   }
+
+  /**
+   * Compute intrinsic ETF statistics (independent of simulation strategy):
+   *   1. Stock price CAGR over the entire data lifecycle
+   *   2. Average and median annual dividend yield (配息率)
+   */
+  computeETFStats() {
+    const vp = this._buildValuationPrices();
+    const sortedMonths = [...vp.keys()].sort();
+
+    if (sortedMonths.length < 2) return null;
+
+    const firstMonth = sortedMonths[0];
+    const lastMonth = sortedMonths[sortedMonths.length - 1];
+    const firstPrice = vp.get(firstMonth);
+    const lastPrice = vp.get(lastMonth);
+
+    // CAGR = (endPrice / startPrice)^(1/years) - 1
+    const y1 = parseInt(firstMonth.substring(0, 4));
+    const m1 = parseInt(firstMonth.substring(5, 7));
+    const y2 = parseInt(lastMonth.substring(0, 4));
+    const m2 = parseInt(lastMonth.substring(5, 7));
+    const years = ((y2 - y1) * 12 + (m2 - m1)) / 12;
+    const cagr = years > 0 ? (Math.pow(lastPrice / firstPrice, 1 / years) - 1) * 100 : 0;
+
+    // Annual dividend yield: for each dividend, yield = amount / price at that month
+    // Group by year, sum yields per year, then compute average and median
+    const yearlyYield = new Map();
+    for (const div of this.dividends) {
+      const ym = div.date.substring(0, 7);
+      const year = div.date.substring(0, 4);
+      const price = vp.get(ym);
+      if (!price || price <= 0) continue;
+      yearlyYield.set(year, (yearlyYield.get(year) || 0) + div.amount / price);
+    }
+
+    const yields = [...yearlyYield.values()].sort((a, b) => a - b);
+    let avgYield = 0;
+    let medianYield = 0;
+
+    if (yields.length > 0) {
+      avgYield = (yields.reduce((s, v) => s + v, 0) / yields.length) * 100;
+      const mid = Math.floor(yields.length / 2);
+      medianYield = (yields.length % 2 === 0
+        ? (yields[mid - 1] + yields[mid]) / 2
+        : yields[mid]) * 100;
+    }
+
+    return {
+      cagr,
+      avgDividendYield: avgYield,
+      medianDividendYield: medianYield,
+      priceRange: `${firstMonth} ~ ${lastMonth}`,
+      firstPrice,
+      lastPrice,
+      years,
+      dividendYears: yields.length,
+    };
+  }
 }
